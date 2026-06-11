@@ -1,0 +1,49 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Env files
+.env
+.env.local
+.env.development
+.env.production
+.env.test
+**/.env
+**/.env.local
+**/.env.development
+**/.env.production
+**/.env.test
+
+# Keep env examples
+!.env.example
+!**/.env.example
+
+# Build outputs
+dist/
+build/
+**/dist/
+**/build/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Prisma
+backend/prisma/dev.db
+backend/prisma/dev.db-journal
+
+# Coverage
+coverage/
+**/coverage/
