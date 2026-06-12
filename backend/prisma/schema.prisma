@@ -14,3 +14,178 @@ model HealthCheck {
 
   @@map("health_checks")
 }
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+  BLOCKED
+}
+
+enum DocumentType {
+  INVOICE
+  CREDIT_NOTE
+  DEBIT_NOTE
+  OTHER
+}
+
+enum DocumentStatus {
+  PENDING
+  OVERDUE
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+  VOID
+}
+
+enum PaymentMode {
+  TOTAL_DEBT
+  OVERDUE_DEBT
+  MANUAL_SELECTION
+}
+
+enum PaymentStatus {
+  CREATED
+  PENDING
+  IN_PROGRESS
+  PAID
+  FAILED
+  CANCELLED
+  EXPIRED
+}
+
+enum EventSource {
+  KHIPU
+  ZOHO
+  SYSTEM
+}
+
+model Customer {
+  id             String         @id @default(uuid()) @db.Uuid
+  rut            String         @unique @db.VarChar(20)
+  rutNormalized  String         @unique @map("rut_normalized") @db.VarChar(20)
+  businessName   String         @map("business_name") @db.VarChar(255)
+  email          String?        @db.VarChar(255)
+  phone          String?        @db.VarChar(50)
+  zohoCustomerId String?        @unique @map("zoho_customer_id") @db.VarChar(100)
+  status         CustomerStatus @default(ACTIVE)
+
+  documents CustomerDocument[]
+  payments  Payment[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("customers")
+}
+
+model CustomerDocument {
+  id                String         @id @default(uuid()) @db.Uuid
+  customerId        String         @map("customer_id") @db.Uuid
+  zohoDocumentId    String?        @map("zoho_document_id") @db.VarChar(100)
+  documentType      DocumentType   @default(INVOICE) @map("document_type")
+  documentNumber    String         @map("document_number") @db.VarChar(100)
+  issueDate         DateTime?      @map("issue_date") @db.Date
+  dueDate           DateTime       @map("due_date") @db.Date
+  totalAmount       Int            @map("total_amount")
+  outstandingAmount Int            @map("outstanding_amount")
+  currency          String         @default("CLP") @db.VarChar(10)
+  status            DocumentStatus @default(PENDING)
+
+  customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  paymentDocuments PaymentDocument[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([customerId, documentNumber])
+  @@index([customerId])
+  @@index([status])
+  @@index([dueDate])
+  @@map("customer_documents")
+}
+
+model Payment {
+  id              String        @id @default(uuid()) @db.Uuid
+  customerId      String        @map("customer_id") @db.Uuid
+  mode            PaymentMode
+  amount          Int
+  currency        String        @default("CLP") @db.VarChar(10)
+  status          PaymentStatus @default(CREATED)
+  idempotencyKey  String        @unique @map("idempotency_key") @db.VarChar(200)
+  khipuPaymentId  String?       @unique @map("khipu_payment_id") @db.VarChar(100)
+  khipuPaymentUrl String?       @map("khipu_payment_url") @db.Text
+  expiresAt       DateTime?     @map("expires_at")
+  paidAt          DateTime?     @map("paid_at")
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
+
+  documents PaymentDocument[]
+  attempts  PaymentAttempt[]
+  events    PaymentEvent[]
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([customerId])
+  @@index([status])
+  @@index([mode])
+  @@map("payments")
+}
+
+model PaymentDocument {
+  id         String @id @default(uuid()) @db.Uuid
+  paymentId  String @map("payment_id") @db.Uuid
+  documentId String @map("document_id") @db.Uuid
+  amount     Int
+
+  payment  Payment          @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+  document CustomerDocument @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([paymentId, documentId])
+  @@index([paymentId])
+  @@index([documentId])
+  @@map("payment_documents")
+}
+
+model PaymentAttempt {
+  id              String        @id @default(uuid()) @db.Uuid
+  paymentId       String?       @map("payment_id") @db.Uuid
+  customerId      String?       @map("customer_id") @db.Uuid
+  mode            PaymentMode
+  amount          Int?
+  status          PaymentStatus
+  errorMessage    String?       @map("error_message") @db.Text
+  requestPayload  Json?         @map("request_payload")
+  responsePayload Json?         @map("response_payload")
+
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([paymentId])
+  @@index([customerId])
+  @@index([status])
+  @@map("payment_attempts")
+}
+
+model PaymentEvent {
+  id              String      @id @default(uuid()) @db.Uuid
+  paymentId       String?     @map("payment_id") @db.Uuid
+  eventSource     EventSource @default(KHIPU) @map("event_source")
+  eventType       String?     @map("event_type") @db.VarChar(100)
+  externalEventId String?     @unique @map("external_event_id") @db.VarChar(150)
+  payload         Json
+  processed       Boolean     @default(false)
+  processedAt     DateTime?   @map("processed_at")
+
+  payment Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([paymentId])
+  @@index([eventSource])
+  @@index([processed])
+  @@map("payment_events")
+}
