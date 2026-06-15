@@ -8,12 +8,29 @@ import {
 const prisma = new PrismaClient();
 
 async function main() {
+  const existingValidCustomer = await prisma.customer.findUnique({
+    where: {
+      rutNormalized: '76123456-0',
+    },
+  });
+
+  if (!existingValidCustomer) {
+    await prisma.customer.updateMany({
+      where: {
+        rutNormalized: '76123456-7',
+      },
+      data: {
+        rut: '76.123.456-0',
+        rutNormalized: '76123456-0',
+      },
+    });
+  }
   const customer = await prisma.customer.upsert({
     where: {
-      rutNormalized: '76123456-7',
+      rutNormalized: '76123456-0',
     },
     update: {
-      rut: '76.123.456-7',
+      rut: '76.123.456-0',
       businessName: 'Empresa Demo SpA',
       email: 'contacto@empresademo.cl',
       phone: '+56 9 1234 5678',
@@ -21,8 +38,8 @@ async function main() {
       status: CustomerStatus.ACTIVE,
     },
     create: {
-      rut: '76.123.456-7',
-      rutNormalized: '76123456-7',
+      rut: '76.123.456-0',
+      rutNormalized: '76123456-0',
       businessName: 'Empresa Demo SpA',
       email: 'contacto@empresademo.cl',
       phone: '+56 9 1234 5678',
