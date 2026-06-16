@@ -8,6 +8,7 @@ import { validate } from './config/env.validation';
 import { HealthModule } from './health/health.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { CustomersModule } from './modules/customers/customers.module';
+import { DocumentsModule } from './modules/documents/documents.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { CustomersModule } from './modules/customers/customers.module';
     PrismaModule,
     HealthModule,
     CustomersModule,
+    DocumentsModule,
   ],
   controllers: [AppController],
   providers: [
