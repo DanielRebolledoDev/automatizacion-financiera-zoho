@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
   url      = env("DATABASE_URL")
 }
 
@@ -60,7 +60,7 @@ enum EventSource {
 }
 
 model Customer {
-  id             String         @id @default(uuid()) @db.Uuid
+  id             String         @id @default(uuid()) @db.Char(36)
   rut            String         @unique @db.VarChar(20)
   rutNormalized  String         @unique @map("rut_normalized") @db.VarChar(20)
   businessName   String         @map("business_name") @db.VarChar(255)
@@ -79,8 +79,8 @@ model Customer {
 }
 
 model CustomerDocument {
-  id                String         @id @default(uuid()) @db.Uuid
-  customerId        String         @map("customer_id") @db.Uuid
+  id                String         @id @default(uuid()) @db.Char(36)
+  customerId        String         @map("customer_id") @db.Char(36)
   zohoDocumentId    String?        @map("zoho_document_id") @db.VarChar(100)
   documentType      DocumentType   @default(INVOICE) @map("document_type")
   documentNumber    String         @map("document_number") @db.VarChar(100)
@@ -105,8 +105,8 @@ model CustomerDocument {
 }
 
 model Payment {
-  id              String        @id @default(uuid()) @db.Uuid
-  customerId      String        @map("customer_id") @db.Uuid
+  id              String        @id @default(uuid()) @db.Char(36)
+  customerId      String        @map("customer_id") @db.Char(36)
   mode            PaymentMode
   amount          Int
   currency        String        @default("CLP") @db.VarChar(10)
@@ -133,9 +133,9 @@ model Payment {
 }
 
 model PaymentDocument {
-  id         String @id @default(uuid()) @db.Uuid
-  paymentId  String @map("payment_id") @db.Uuid
-  documentId String @map("document_id") @db.Uuid
+  id         String @id @default(uuid()) @db.Char(36)
+  paymentId  String @map("payment_id") @db.Char(36)
+  documentId String @map("document_id") @db.Char(36)
   amount     Int
 
   payment  Payment          @relation(fields: [paymentId], references: [id], onDelete: Restrict)
@@ -150,9 +150,9 @@ model PaymentDocument {
 }
 
 model PaymentAttempt {
-  id              String        @id @default(uuid()) @db.Uuid
-  paymentId       String?       @map("payment_id") @db.Uuid
-  customerId      String?       @map("customer_id") @db.Uuid
+  id              String        @id @default(uuid()) @db.Char(36)
+  paymentId       String?       @map("payment_id") @db.Char(36)
+  customerId      String?       @map("customer_id") @db.Char(36)
   mode            PaymentMode
   amount          Int?
   status          PaymentStatus
@@ -171,8 +171,8 @@ model PaymentAttempt {
 }
 
 model PaymentEvent {
-  id              String      @id @default(uuid()) @db.Uuid
-  paymentId       String?     @map("payment_id") @db.Uuid
+  id              String      @id @default(uuid()) @db.Char(36)
+  paymentId       String?     @map("payment_id") @db.Char(36)
   eventSource     EventSource @default(KHIPU) @map("event_source")
   eventType       String?     @map("event_type") @db.VarChar(100)
   externalEventId String?     @unique @map("external_event_id") @db.VarChar(150)
