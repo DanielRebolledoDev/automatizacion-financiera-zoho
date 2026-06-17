@@ -10,6 +10,7 @@ import { PrismaModule } from './prisma/prisma.module';
 import { CustomersModule } from './modules/customers/customers.module';
 import { DocumentsModule } from './modules/documents/documents.module';
 import { DebtsModule } from './modules/debts/debts.module';
+import { PaymentsModule } from './modules/payments/payments.module';
 
 @Module({
   imports: [
@@ -30,6 +31,7 @@ import { DebtsModule } from './modules/debts/debts.module';
     CustomersModule,
     DocumentsModule,
     DebtsModule,
+    PaymentsModule,
   ],
   controllers: [AppController],
   providers: [
