@@ -23,6 +23,93 @@ const ACTIVE_PAYMENT_STATUSES = [
 export class PaymentsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async findPaymentStatusById(paymentId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: {
+        id: paymentId,
+      },
+      include: {
+        customer: {
+          select: {
+            id: true,
+            rut: true,
+            businessName: true,
+          },
+        },
+        documents: {
+          include: {
+            document: true,
+          },
+          orderBy: {
+            createdAt: 'asc',
+          },
+        },
+        attempts: {
+          orderBy: {
+            createdAt: 'desc',
+          },
+          take: 5,
+          select: {
+            id: true,
+            mode: true,
+            amount: true,
+            status: true,
+            errorMessage: true,
+            createdAt: true,
+          },
+        },
+        events: {
+          orderBy: {
+            createdAt: 'desc',
+          },
+          take: 5,
+          select: {
+            id: true,
+            eventSource: true,
+            eventType: true,
+            processed: true,
+            processedAt: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    return {
+      message: 'Estado de pago obtenido correctamente.',
+      payment: {
+        id: payment.id,
+        mode: payment.mode,
+        amount: payment.amount,
+        currency: payment.currency,
+        status: payment.status,
+        khipuPaymentId: payment.khipuPaymentId,
+        khipuPaymentUrl: payment.khipuPaymentUrl,
+        expiresAt: payment.expiresAt,
+        paidAt: payment.paidAt,
+        createdAt: payment.createdAt,
+        updatedAt: payment.updatedAt,
+        customer: payment.customer,
+        documents: payment.documents.map((paymentDocument) => ({
+          id: paymentDocument.document.id,
+          documentNumber: paymentDocument.document.documentNumber,
+          documentType: paymentDocument.document.documentType,
+          dueDate: paymentDocument.document.dueDate,
+          totalAmount: paymentDocument.document.totalAmount,
+          outstandingAmount: paymentDocument.document.outstandingAmount,
+          paymentAmount: paymentDocument.amount,
+          status: paymentDocument.document.status,
+        })),
+        attempts: payment.attempts,
+        events: payment.events,
+      },
+    };
+  }
+
   async createPayment(createPaymentDto: CreatePaymentDto) {
     const customer = await this.prisma.customer.findUnique({
       where: {
