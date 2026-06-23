@@ -11,6 +11,8 @@ import { CustomersModule } from './modules/customers/customers.module';
 import { DocumentsModule } from './modules/documents/documents.module';
 import { DebtsModule } from './modules/debts/debts.module';
 import { PaymentsModule } from './modules/payments/payments.module';
+import { KhipuModule } from './modules/khipu/khipu.module';
+import { PaymentExpressModule } from './modules/payment-express/payment-express.module';
 
 @Module({
   imports: [
@@ -32,6 +34,8 @@ import { PaymentsModule } from './modules/payments/payments.module';
     DocumentsModule,
     DebtsModule,
     PaymentsModule,
+    KhipuModule,
+    PaymentExpressModule,
   ],
   controllers: [AppController],
   providers: [

@@ -11,6 +11,7 @@ import {
 } from '@prisma/client';
 import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
+import { KhipuService } from '../khipu/khipu.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 
 const ACTIVE_PAYMENT_STATUSES = [
@@ -21,7 +22,121 @@ const ACTIVE_PAYMENT_STATUSES = [
 
 @Injectable()
 export class PaymentsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly khipuService: KhipuService,
+  ) {}
+
+  async createPayment(createPaymentDto: CreatePaymentDto) {
+    const customer = await this.prisma.customer.findUnique({
+      where: {
+        id: createPaymentDto.customerId,
+      },
+      select: {
+        id: true,
+        rut: true,
+        businessName: true,
+      },
+    });
+
+    if (!customer) {
+      throw new NotFoundException('No se encontró el cliente solicitado.');
+    }
+
+    const documents = await this.getDocumentsForPayment(createPaymentDto);
+
+    if (documents.length === 0) {
+      throw new BadRequestException(
+        'No existen documentos pendientes para generar el pago.',
+      );
+    }
+
+    const amount = documents.reduce(
+      (sum, document) => sum + document.outstandingAmount,
+      0,
+    );
+
+    if (amount <= 0) {
+      throw new BadRequestException('El monto del pago debe ser mayor a cero.');
+    }
+
+    const idempotencyKey = this.generateIdempotencyKey({
+      customerId: customer.id,
+      mode: createPaymentDto.mode,
+      documentIds: documents.map((document) => document.id),
+      amount,
+    });
+
+    const existingPayment = await this.prisma.payment.findFirst({
+      where: {
+        idempotencyKey,
+        status: {
+          in: ACTIVE_PAYMENT_STATUSES,
+        },
+      },
+      include: {
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+
+    if (existingPayment) {
+      const paymentToReturn =
+        existingPayment.khipuPaymentId && existingPayment.khipuPaymentUrl
+          ? existingPayment
+          : await this.attachMockKhipuPayment({
+              paymentId: existingPayment.id,
+              customer,
+              amount: existingPayment.amount,
+              mode: existingPayment.mode,
+            });
+
+      return {
+        message: 'Ya existe una intención de pago activa para esta selección.',
+        reused: true,
+        payment: this.mapPaymentResponse(paymentToReturn),
+      };
+    }
+
+    const createdPayment = await this.prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.create({
+        data: {
+          customerId: customer.id,
+          mode: createPaymentDto.mode,
+          amount,
+          currency: 'CLP',
+          status: PaymentStatus.CREATED,
+          idempotencyKey,
+        },
+      });
+
+      await tx.paymentDocument.createMany({
+        data: documents.map((document) => ({
+          paymentId: payment.id,
+          documentId: document.id,
+          amount: document.outstandingAmount,
+        })),
+      });
+
+      return payment;
+    });
+
+    const paymentWithMockKhipu = await this.attachMockKhipuPayment({
+      paymentId: createdPayment.id,
+      customer,
+      amount,
+      mode: createPaymentDto.mode,
+    });
+
+    return {
+      message: 'Intención de pago creada correctamente.',
+      reused: false,
+      payment: this.mapPaymentResponse(paymentWithMockKhipu),
+    };
+  }
 
   async findPaymentStatusById(paymentId: string) {
     const payment = await this.prisma.payment.findUnique({
@@ -107,126 +222,6 @@ export class PaymentsService {
         attempts: payment.attempts,
         events: payment.events,
       },
-    };
-  }
-
-  async createPayment(createPaymentDto: CreatePaymentDto) {
-    const customer = await this.prisma.customer.findUnique({
-      where: {
-        id: createPaymentDto.customerId,
-      },
-      select: {
-        id: true,
-        rut: true,
-        businessName: true,
-      },
-    });
-
-    if (!customer) {
-      throw new NotFoundException('No se encontró el cliente solicitado.');
-    }
-
-    const documents = await this.getDocumentsForPayment(createPaymentDto);
-
-    if (documents.length === 0) {
-      throw new BadRequestException(
-        'No existen documentos pendientes para generar el pago.',
-      );
-    }
-
-    const amount = documents.reduce(
-      (sum, document) => sum + document.outstandingAmount,
-      0,
-    );
-
-    if (amount <= 0) {
-      throw new BadRequestException('El monto del pago debe ser mayor a cero.');
-    }
-
-    const idempotencyKey = this.generateIdempotencyKey({
-      customerId: customer.id,
-      mode: createPaymentDto.mode,
-      documentIds: documents.map((document) => document.id),
-      amount,
-    });
-
-    const existingPayment = await this.prisma.payment.findFirst({
-      where: {
-        idempotencyKey,
-        status: {
-          in: ACTIVE_PAYMENT_STATUSES,
-        },
-      },
-      include: {
-        documents: {
-          include: {
-            document: true,
-          },
-        },
-      },
-    });
-
-    if (existingPayment) {
-      return {
-        message: 'Ya existe una intención de pago activa para esta selección.',
-        reused: true,
-        payment: this.mapPaymentResponse(existingPayment),
-      };
-    }
-
-    const payment = await this.prisma.$transaction(async (tx) => {
-      const createdPayment = await tx.payment.create({
-        data: {
-          customerId: customer.id,
-          mode: createPaymentDto.mode,
-          amount,
-          currency: 'CLP',
-          status: PaymentStatus.CREATED,
-          idempotencyKey,
-        },
-      });
-
-      await tx.paymentDocument.createMany({
-        data: documents.map((document) => ({
-          paymentId: createdPayment.id,
-          documentId: document.id,
-          amount: document.outstandingAmount,
-        })),
-      });
-
-      await tx.paymentAttempt.create({
-        data: {
-          paymentId: createdPayment.id,
-          customerId: customer.id,
-          mode: createPaymentDto.mode,
-          amount,
-          status: PaymentStatus.CREATED,
-          requestPayload: createPaymentDto as unknown as Prisma.InputJsonValue,
-          responsePayload: {
-            provider: 'MOCK',
-            message: 'Pago creado localmente. Khipu aún no integrado.',
-          },
-        },
-      });
-
-      return tx.payment.findUniqueOrThrow({
-        where: {
-          id: createdPayment.id,
-        },
-        include: {
-          documents: {
-            include: {
-              document: true,
-            },
-          },
-        },
-      });
-    });
-
-    return {
-      message: 'Intención de pago creada correctamente.',
-      reused: false,
-      payment: this.mapPaymentResponse(payment),
     };
   }
 
@@ -322,6 +317,61 @@ export class PaymentsService {
     });
   }
 
+  private async attachMockKhipuPayment(params: {
+    paymentId: string;
+    customer: {
+      id: string;
+      rut: string;
+      businessName: string;
+    };
+    amount: number;
+    mode: PaymentMode;
+  }) {
+    const khipuPayment = await this.khipuService.createPayment({
+      paymentId: params.paymentId,
+      amount: params.amount,
+      currency: 'CLP',
+      subject: `Pago ${params.mode} - ${params.customer.businessName}`,
+      customerRut: params.customer.rut,
+    });
+
+    return this.prisma.payment.update({
+      where: {
+        id: params.paymentId,
+      },
+      data: {
+        status: PaymentStatus.PENDING,
+        khipuPaymentId: khipuPayment.paymentId,
+        khipuPaymentUrl: khipuPayment.paymentUrl,
+        expiresAt: new Date(khipuPayment.expiresAt),
+        attempts: {
+          create: {
+            customerId: params.customer.id,
+            mode: params.mode,
+            amount: params.amount,
+            status: PaymentStatus.PENDING,
+            requestPayload: {
+              provider: 'MOCK_KHIPU',
+              paymentId: params.paymentId,
+              amount: params.amount,
+              currency: 'CLP',
+              subject: `Pago ${params.mode} - ${params.customer.businessName}`,
+              customerRut: params.customer.rut,
+            },
+            responsePayload: khipuPayment as unknown as Prisma.InputJsonValue,
+          },
+        },
+      },
+      include: {
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+  }
+
   private generateIdempotencyKey(params: {
     customerId: string;
     mode: PaymentMode;
@@ -359,6 +409,8 @@ export class PaymentsService {
       status: payment.status,
       khipuPaymentId: payment.khipuPaymentId,
       khipuPaymentUrl: payment.khipuPaymentUrl,
+      expiresAt: payment.expiresAt,
+      paidAt: payment.paidAt,
       createdAt: payment.createdAt,
       documents: payment.documents.map((paymentDocument) => ({
         id: paymentDocument.document.id,
