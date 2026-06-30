@@ -61,27 +61,13 @@ export class PaymentsService {
       throw new BadRequestException('El monto del pago debe ser mayor a cero.');
     }
 
-    const idempotencyKey = this.generateIdempotencyKey({
+    const documentIds = documents.map((document) => document.id);
+
+    const existingPayment = await this.findActivePaymentForSameSelection({
       customerId: customer.id,
       mode: createPaymentDto.mode,
-      documentIds: documents.map((document) => document.id),
       amount,
-    });
-
-    const existingPayment = await this.prisma.payment.findFirst({
-      where: {
-        idempotencyKey,
-        status: {
-          in: ACTIVE_PAYMENT_STATUSES,
-        },
-      },
-      include: {
-        documents: {
-          include: {
-            document: true,
-          },
-        },
-      },
+      documentIds,
     });
 
     if (existingPayment) {
@@ -101,6 +87,13 @@ export class PaymentsService {
         payment: this.mapPaymentResponse(paymentToReturn),
       };
     }
+
+    const idempotencyKey = this.generateIdempotencyKey({
+      customerId: customer.id,
+      mode: createPaymentDto.mode,
+      documentIds,
+      amount,
+    });
 
     const createdPayment = await this.prisma.$transaction(async (tx) => {
       const payment = await tx.payment.create({
@@ -225,6 +218,7 @@ export class PaymentsService {
       },
     };
   }
+
   async markPaymentAsPaidFromMock(paymentId: string) {
     const payment = await this.prisma.payment.findUnique({
       where: {
@@ -501,6 +495,44 @@ export class PaymentsService {
     });
   }
 
+  private async findActivePaymentForSameSelection(params: {
+    customerId: string;
+    mode: PaymentMode;
+    amount: number;
+    documentIds: string[];
+  }) {
+    const candidates = await this.prisma.payment.findMany({
+      where: {
+        customerId: params.customerId,
+        mode: params.mode,
+        amount: params.amount,
+        status: {
+          in: ACTIVE_PAYMENT_STATUSES,
+        },
+      },
+      include: {
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+
+    const requestedDocumentIds = [...params.documentIds].sort().join('|');
+
+    return (
+      candidates.find((payment) => {
+        const paymentDocumentIds = payment.documents
+          .map((paymentDocument) => paymentDocument.documentId)
+          .sort()
+          .join('|');
+
+        return paymentDocumentIds === requestedDocumentIds;
+      }) ?? null
+    );
+  }
+
   private generateIdempotencyKey(params: {
     customerId: string;
     mode: PaymentMode;
@@ -514,6 +546,7 @@ export class PaymentsService {
       mode: params.mode,
       documentIds: sortedDocumentIds,
       amount: params.amount,
+      createdAt: new Date().toISOString(),
     });
 
     return createHash('sha256').update(rawKey).digest('hex');

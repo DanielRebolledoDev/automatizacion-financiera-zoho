@@ -107,6 +107,44 @@ export class PaymentExpressService {
     };
   }
 
+  async getPaymentResult(paymentId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: {
+        id: paymentId,
+      },
+      select: {
+        id: true,
+        amount: true,
+        currency: true,
+        status: true,
+        khipuPaymentUrl: true,
+        expiresAt: true,
+        paidAt: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    return {
+      message: 'Resultado de pago obtenido correctamente.',
+      payment: {
+        id: payment.id,
+        amount: payment.amount,
+        currency: payment.currency,
+        status: payment.status,
+        paymentUrl: payment.khipuPaymentUrl,
+        expiresAt: payment.expiresAt,
+        paidAt: payment.paidAt,
+        createdAt: payment.createdAt,
+        updatedAt: payment.updatedAt,
+      },
+    };
+  }
+
   private validateAndNormalizeRut(rut: string): string {
     const normalizedRut = normalizeRut(rut);
 
