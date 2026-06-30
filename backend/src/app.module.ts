@@ -13,6 +13,7 @@ import { DebtsModule } from './modules/debts/debts.module';
 import { PaymentsModule } from './modules/payments/payments.module';
 import { KhipuModule } from './modules/khipu/khipu.module';
 import { PaymentExpressModule } from './modules/payment-express/payment-express.module';
+import { WebhooksModule } from './modules/webhooks/webhooks.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { PaymentExpressModule } from './modules/payment-express/payment-express.
     PaymentsModule,
     KhipuModule,
     PaymentExpressModule,
+    WebhooksModule,
   ],
   controllers: [AppController],
   providers: [

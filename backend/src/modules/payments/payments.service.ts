@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import {
   DocumentStatus,
+  EventSource,
   PaymentMode,
   PaymentStatus,
   Prisma,
@@ -222,6 +223,134 @@ export class PaymentsService {
         attempts: payment.attempts,
         events: payment.events,
       },
+    };
+  }
+  async markPaymentAsPaidFromMock(paymentId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: {
+        id: paymentId,
+      },
+      include: {
+        customer: {
+          select: {
+            id: true,
+            rut: true,
+            businessName: true,
+          },
+        },
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    if (payment.status === PaymentStatus.PAID) {
+      return {
+        message: 'El pago ya se encontraba marcado como pagado.',
+        alreadyProcessed: true,
+        payment: this.mapPaymentResponse(payment),
+      };
+    }
+
+    if (
+      payment.status === PaymentStatus.CANCELLED ||
+      payment.status === PaymentStatus.FAILED ||
+      payment.status === PaymentStatus.EXPIRED
+    ) {
+      throw new BadRequestException(
+        'No se puede marcar como pagado un pago cancelado, fallido o expirado.',
+      );
+    }
+
+    const now = new Date();
+    const documentIds = payment.documents.map(
+      (paymentDocument) => paymentDocument.documentId,
+    );
+
+    const updatedPayment = await this.prisma.$transaction(async (tx) => {
+      await tx.payment.update({
+        where: {
+          id: payment.id,
+        },
+        data: {
+          status: PaymentStatus.PAID,
+          paidAt: now,
+        },
+      });
+
+      await tx.customerDocument.updateMany({
+        where: {
+          id: {
+            in: documentIds,
+          },
+        },
+        data: {
+          status: DocumentStatus.PAID,
+          outstandingAmount: 0,
+        },
+      });
+
+      await tx.paymentEvent.create({
+        data: {
+          paymentId: payment.id,
+          eventSource: EventSource.KHIPU,
+          eventType: 'payment.paid.mock',
+          externalEventId: `mock-paid-${payment.id}`,
+          payload: {
+            provider: 'MOCK_KHIPU',
+            paymentId: payment.id,
+            khipuPaymentId: payment.khipuPaymentId,
+            status: PaymentStatus.PAID,
+            receivedAt: now.toISOString(),
+          },
+          processed: true,
+          processedAt: now,
+        },
+      });
+
+      await tx.paymentAttempt.create({
+        data: {
+          paymentId: payment.id,
+          customerId: payment.customer.id,
+          mode: payment.mode,
+          amount: payment.amount,
+          status: PaymentStatus.PAID,
+          requestPayload: {
+            provider: 'MOCK_KHIPU',
+            action: 'mock-paid',
+            paymentId: payment.id,
+          },
+          responsePayload: {
+            status: PaymentStatus.PAID,
+            processedAt: now.toISOString(),
+          },
+        },
+      });
+
+      return tx.payment.findUniqueOrThrow({
+        where: {
+          id: payment.id,
+        },
+        include: {
+          documents: {
+            include: {
+              document: true,
+            },
+          },
+        },
+      });
+    });
+
+    return {
+      message: 'Pago mock procesado correctamente.',
+      alreadyProcessed: false,
+      payment: this.mapPaymentResponse(updatedPayment),
     };
   }
 
