@@ -20,6 +20,7 @@ import {
 } from "@mui/material";
 import { Controller, useForm } from "react-hook-form";
 import { formatCurrency } from "../../../shared/utils/formatCurrency";
+import { usePaymentExpressPayTotal } from "../hooks/usePaymentExpressPayTotal";
 import { usePaymentExpressSummary } from "../hooks/usePaymentExpressSummary";
 import {
   paymentExpressRutSchema,
@@ -28,10 +29,12 @@ import {
 
 export function PaymentExpressPage() {
   const summaryMutation = usePaymentExpressSummary();
+  const payTotalMutation = usePaymentExpressPayTotal();
 
   const {
     control,
     handleSubmit,
+    getValues,
     formState: { errors },
   } = useForm<PaymentExpressRutFormValues>({
     resolver: zodResolver(paymentExpressRutSchema),
@@ -46,7 +49,23 @@ export function PaymentExpressPage() {
     });
   };
 
+  const handlePayTotal = async () => {
+    const rut = getValues("rut");
+
+    const response = await payTotalMutation.mutateAsync({
+      rut,
+    });
+
+    if (response.payment.paymentUrl) {
+      window.location.assign(response.payment.paymentUrl);
+      return;
+    }
+
+    window.location.assign(`/pago-express/resultado/${response.payment.id}`);
+  };
+
   const summary = summaryMutation.data;
+  const isLoading = summaryMutation.isPending || payTotalMutation.isPending;
 
   return (
     <Box
@@ -103,7 +122,7 @@ export function PaymentExpressPage() {
                         "Ingresa el RUT con o sin puntos."
                       }
                       error={Boolean(errors.rut)}
-                      disabled={summaryMutation.isPending}
+                      disabled={isLoading}
                     />
                   )}
                 />
@@ -119,7 +138,7 @@ export function PaymentExpressPage() {
                       <SearchOutlined />
                     )
                   }
-                  disabled={summaryMutation.isPending}
+                  disabled={isLoading}
                 >
                   {summaryMutation.isPending
                     ? "Consultando..."
@@ -129,6 +148,12 @@ export function PaymentExpressPage() {
                 {summaryMutation.isError && (
                   <Alert severity="error">
                     {summaryMutation.error.message}
+                  </Alert>
+                )}
+
+                {payTotalMutation.isError && (
+                  <Alert severity="error">
+                    {payTotalMutation.error.message}
                   </Alert>
                 )}
 
@@ -156,13 +181,23 @@ export function PaymentExpressPage() {
                       )}
 
                       <Button
+                        type="button"
                         variant="contained"
                         color="secondary"
                         size="large"
-                        startIcon={<AccountBalanceWallet />}
-                        disabled={!summary.canPay}
+                        startIcon={
+                          payTotalMutation.isPending ? (
+                            <CircularProgress size={20} color="inherit" />
+                          ) : (
+                            <AccountBalanceWallet />
+                          )
+                        }
+                        disabled={!summary.canPay || isLoading}
+                        onClick={handlePayTotal}
                       >
-                        Pagar deuda total
+                        {payTotalMutation.isPending
+                          ? "Generando pago..."
+                          : "Pagar deuda total"}
                       </Button>
                     </Stack>
                   </>
