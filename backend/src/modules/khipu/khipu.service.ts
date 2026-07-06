@@ -31,7 +31,7 @@ export class KhipuService {
   createPayment(
     params: CreateKhipuMockPaymentParams,
   ): Promise<KhipuMockPaymentResponse> {
-    const publicBackendUrl = this.getPublicBackendUrl();
+    const frontendUrl = this.getFrontendUrl();
 
     const mockPaymentId = `mock_${createHash('sha256')
       .update(params.paymentId)
@@ -41,7 +41,7 @@ export class KhipuService {
     return Promise.resolve({
       provider: 'MOCK_KHIPU',
       paymentId: mockPaymentId,
-      paymentUrl: `${publicBackendUrl}/api/mock/khipu/checkout/${params.paymentId}`,
+      paymentUrl: `${frontendUrl}/mock-khipu/checkout/${params.paymentId}`,
       expiresAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       raw: {
         localPaymentId: params.paymentId,
@@ -53,15 +53,17 @@ export class KhipuService {
     });
   }
 
-  private getPublicBackendUrl(): string {
-    const publicBackendUrl = this.configService
-      .get<string>('PUBLIC_BACKEND_URL')
+  private getFrontendUrl(): string {
+    const corsAllowedOrigins = this.configService
+      .get<string>('CORS_ALLOWED_ORIGINS')
       ?.trim();
 
-    if (!publicBackendUrl) {
-      return 'http://localhost:3000';
+    if (!corsAllowedOrigins) {
+      return 'http://localhost:5173';
     }
 
-    return publicBackendUrl.replace(/\/$/, '');
+    const firstOrigin = corsAllowedOrigins.split(',')[0]?.trim();
+
+    return firstOrigin || 'http://localhost:5173';
   }
 }

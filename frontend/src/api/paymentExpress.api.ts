@@ -1,6 +1,7 @@
 import type {
   PaymentExpressPayTotalRequest,
   PaymentExpressPayTotalResponse,
+  PaymentExpressResultResponse,
   PaymentExpressSummaryRequest,
   PaymentExpressSummaryResponse,
 } from "../features/payment-express/types/paymentExpress.types";
@@ -18,4 +19,9 @@ export const paymentExpressApi = {
       PaymentExpressPayTotalResponse,
       PaymentExpressPayTotalRequest
     >("/payment-express/pay-total", body),
+
+  getPaymentResult: (paymentId: string) =>
+    httpClient.get<PaymentExpressResultResponse>(
+      `/payment-express/result/${paymentId}`,
+    ),
 };

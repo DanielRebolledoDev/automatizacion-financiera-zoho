@@ -27,3 +27,20 @@ export interface PaymentExpressPayTotalResponse {
   reused: boolean;
   payment: PaymentExpressPayment;
 }
+
+export interface PaymentExpressResultPayment {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  paymentUrl: string | null;
+  expiresAt: string | null;
+  paidAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PaymentExpressResultResponse {
+  message: string;
+  payment: PaymentExpressResultPayment;
+}
