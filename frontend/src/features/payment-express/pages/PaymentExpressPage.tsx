@@ -14,12 +14,15 @@ import {
   CircularProgress,
   Container,
   Divider,
+  Paper,
   Stack,
   TextField,
   Typography,
 } from "@mui/material";
+import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { formatCurrency } from "../../../shared/utils/formatCurrency";
+import { formatRutInput } from "../../../shared/utils/rut";
 import { usePaymentExpressPayTotal } from "../hooks/usePaymentExpressPayTotal";
 import { usePaymentExpressSummary } from "../hooks/usePaymentExpressSummary";
 import {
@@ -28,6 +31,8 @@ import {
 } from "../schemas/paymentExpress.schema";
 
 export function PaymentExpressPage() {
+  const [lastConsultedRut, setLastConsultedRut] = useState<string | null>(null);
+
   const summaryMutation = usePaymentExpressSummary();
   const payTotalMutation = usePaymentExpressPayTotal();
 
@@ -44,13 +49,41 @@ export function PaymentExpressPage() {
   });
 
   const onSubmit = (values: PaymentExpressRutFormValues) => {
-    summaryMutation.mutate({
-      rut: values.rut,
-    });
+    payTotalMutation.reset();
+
+    summaryMutation.mutate(
+      {
+        rut: values.rut,
+      },
+      {
+        onSuccess: () => {
+          setLastConsultedRut(values.rut);
+        },
+      },
+    );
+  };
+
+  const handleRutChange = (
+    value: string,
+    onChange: (value: string) => void,
+  ) => {
+    const formattedRut = formatRutInput(value);
+
+    onChange(formattedRut);
+
+    if (summaryMutation.data || summaryMutation.error) {
+      summaryMutation.reset();
+    }
+
+    if (payTotalMutation.error) {
+      payTotalMutation.reset();
+    }
+
+    setLastConsultedRut(null);
   };
 
   const handlePayTotal = async () => {
-    const rut = getValues("rut");
+    const rut = lastConsultedRut ?? getValues("rut");
 
     const response = await payTotalMutation.mutateAsync({
       rut,
@@ -123,6 +156,9 @@ export function PaymentExpressPage() {
                       }
                       error={Boolean(errors.rut)}
                       disabled={isLoading}
+                      onChange={(event) =>
+                        handleRutChange(event.target.value, field.onChange)
+                      }
                     />
                   )}
                 />
@@ -161,45 +197,62 @@ export function PaymentExpressPage() {
                   <>
                     <Divider />
 
-                    <Stack spacing={2}>
-                      <Typography variant="subtitle2" color="text.secondary">
-                        Deuda total encontrada
-                      </Typography>
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        p: 3,
+                        borderRadius: 1,
+                        backgroundColor: "background.default",
+                      }}
+                    >
+                      <Stack spacing={2}>
+                        <Stack spacing={0.5}>
+                          <Typography
+                            variant="subtitle2"
+                            color="text.secondary"
+                          >
+                            Deuda total encontrada
+                          </Typography>
 
-                      <Typography variant="h4" color="primary">
-                        {formatCurrency(summary.totalDebt, summary.currency)}
-                      </Typography>
+                          <Typography variant="h4" color="primary">
+                            {formatCurrency(
+                              summary.totalDebt,
+                              summary.currency,
+                            )}
+                          </Typography>
+                        </Stack>
 
-                      {summary.canPay ? (
-                        <Alert severity="success">
-                          Puedes continuar con el pago de la deuda total.
-                        </Alert>
-                      ) : (
-                        <Alert severity="info">
-                          No registras deuda pendiente para pago express.
-                        </Alert>
-                      )}
+                        {summary.canPay ? (
+                          <Alert severity="success">
+                            Puedes continuar con el pago de la deuda total.
+                          </Alert>
+                        ) : (
+                          <Alert severity="info">
+                            No registras deuda pendiente para pago express.
+                          </Alert>
+                        )}
 
-                      <Button
-                        type="button"
-                        variant="contained"
-                        color="secondary"
-                        size="large"
-                        startIcon={
-                          payTotalMutation.isPending ? (
-                            <CircularProgress size={20} color="inherit" />
-                          ) : (
-                            <AccountBalanceWallet />
-                          )
-                        }
-                        disabled={!summary.canPay || isLoading}
-                        onClick={handlePayTotal}
-                      >
-                        {payTotalMutation.isPending
-                          ? "Generando pago..."
-                          : "Pagar deuda total"}
-                      </Button>
-                    </Stack>
+                        <Button
+                          type="button"
+                          variant="contained"
+                          color="secondary"
+                          size="large"
+                          startIcon={
+                            payTotalMutation.isPending ? (
+                              <CircularProgress size={20} color="inherit" />
+                            ) : (
+                              <AccountBalanceWallet />
+                            )
+                          }
+                          disabled={!summary.canPay || isLoading}
+                          onClick={handlePayTotal}
+                        >
+                          {payTotalMutation.isPending
+                            ? "Generando pago..."
+                            : "Pagar deuda total"}
+                        </Button>
+                      </Stack>
+                    </Paper>
                   </>
                 )}
               </Stack>
