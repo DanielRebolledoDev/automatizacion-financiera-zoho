@@ -14,6 +14,8 @@ import { PaymentsModule } from './modules/payments/payments.module';
 import { KhipuModule } from './modules/khipu/khipu.module';
 import { PaymentExpressModule } from './modules/payment-express/payment-express.module';
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
+import { ZohoModule } from './modules/zoho/zoho.module';
+import { IntegrationsModule } from './modules/integrations/integrations.module';
 
 @Module({
   imports: [
@@ -38,6 +40,8 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     KhipuModule,
     PaymentExpressModule,
     WebhooksModule,
+    ZohoModule,
+    IntegrationsModule,
   ],
   controllers: [AppController],
   providers: [
