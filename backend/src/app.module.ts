@@ -16,6 +16,7 @@ import { PaymentExpressModule } from './modules/payment-express/payment-express.
 import { WebhooksModule } from './modules/webhooks/webhooks.module';
 import { ZohoModule } from './modules/zoho/zoho.module';
 import { IntegrationsModule } from './modules/integrations/integrations.module';
+import { CustomerDataModule } from './modules/customer-data/customer-data.module';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { IntegrationsModule } from './modules/integrations/integrations.module';
     WebhooksModule,
     ZohoModule,
     IntegrationsModule,
+    CustomerDataModule,
   ],
   controllers: [AppController],
   providers: [

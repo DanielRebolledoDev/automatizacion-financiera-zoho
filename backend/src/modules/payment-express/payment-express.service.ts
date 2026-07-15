@@ -1,18 +1,21 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DocumentStatus, PaymentMode } from '@prisma/client';
+import { PaymentMode } from '@prisma/client';
 import { isValidRut, normalizeRut } from '../../common/utils/rut.util';
-import { PrismaService } from '../../prisma/prisma.service';
+import { CUSTOMER_DATA_PROVIDER } from '../customer-data/customer-data.constants';
+import type { CustomerDataProvider } from '../customer-data/interfaces/customer-data-provider.interface';
 import { PaymentsService } from '../payments/payments.service';
 import { PaymentExpressRutDto } from './dto/payment-express-rut.dto';
 
 @Injectable()
 export class PaymentExpressService {
   constructor(
-    private readonly prisma: PrismaService,
+    @Inject(CUSTOMER_DATA_PROVIDER)
+    private readonly customerDataProvider: CustomerDataProvider,
     private readonly paymentsService: PaymentsService,
   ) {}
 
@@ -21,48 +24,22 @@ export class PaymentExpressService {
       paymentExpressRutDto.rut,
     );
 
-    const customer = await this.prisma.customer.findUnique({
-      where: {
-        rutNormalized: normalizedRut,
-      },
-      select: {
-        id: true,
-        documents: {
-          where: {
-            status: {
-              in: [
-                DocumentStatus.PENDING,
-                DocumentStatus.OVERDUE,
-                DocumentStatus.PARTIALLY_PAID,
-              ],
-            },
-            outstandingAmount: {
-              gt: 0,
-            },
-          },
-          select: {
-            outstandingAmount: true,
-          },
-        },
-      },
-    });
+    const summary =
+      await this.customerDataProvider.getPaymentExpressSummaryByRut(
+        normalizedRut,
+      );
 
-    if (!customer) {
+    if (!summary) {
       throw new NotFoundException(
         'No se encontró deuda asociada al RUT ingresado.',
       );
     }
 
-    const totalDebt = customer.documents.reduce(
-      (sum, document) => sum + document.outstandingAmount,
-      0,
-    );
-
     return {
       message: 'Resumen de deuda express obtenido correctamente.',
-      totalDebt,
-      currency: 'CLP',
-      canPay: totalDebt > 0,
+      totalDebt: summary.totalDebt,
+      currency: summary.currency,
+      canPay: summary.canPay,
     };
   }
 
@@ -71,23 +48,17 @@ export class PaymentExpressService {
       paymentExpressRutDto.rut,
     );
 
-    const customer = await this.prisma.customer.findUnique({
-      where: {
-        rutNormalized: normalizedRut,
-      },
-      select: {
-        id: true,
-      },
-    });
+    const customerReference =
+      await this.customerDataProvider.getCustomerReferenceByRut(normalizedRut);
 
-    if (!customer) {
+    if (!customerReference) {
       throw new NotFoundException(
         'No se encontró deuda asociada al RUT ingresado.',
       );
     }
 
     const paymentResult = await this.paymentsService.createPayment({
-      customerId: customer.id,
+      customerId: customerReference.customerId,
       mode: PaymentMode.TOTAL_DEBT,
     });
 
@@ -108,39 +79,20 @@ export class PaymentExpressService {
   }
 
   async getPaymentResult(paymentId: string) {
-    const payment = await this.prisma.payment.findUnique({
-      where: {
-        id: paymentId,
-      },
-      select: {
-        id: true,
-        amount: true,
-        currency: true,
-        status: true,
-        khipuPaymentUrl: true,
-        expiresAt: true,
-        paidAt: true,
-        createdAt: true,
-        updatedAt: true,
-      },
-    });
-
-    if (!payment) {
-      throw new NotFoundException('No se encontró el pago solicitado.');
-    }
+    const payment = await this.paymentsService.findPaymentStatusById(paymentId);
 
     return {
       message: 'Resultado de pago obtenido correctamente.',
       payment: {
-        id: payment.id,
-        amount: payment.amount,
-        currency: payment.currency,
-        status: payment.status,
-        paymentUrl: payment.khipuPaymentUrl,
-        expiresAt: payment.expiresAt,
-        paidAt: payment.paidAt,
-        createdAt: payment.createdAt,
-        updatedAt: payment.updatedAt,
+        id: payment.payment.id,
+        amount: payment.payment.amount,
+        currency: payment.payment.currency,
+        status: payment.payment.status,
+        paymentUrl: payment.payment.khipuPaymentUrl,
+        expiresAt: payment.payment.expiresAt,
+        paidAt: payment.payment.paidAt,
+        createdAt: payment.payment.createdAt,
+        updatedAt: payment.payment.updatedAt,
       },
     };
   }
