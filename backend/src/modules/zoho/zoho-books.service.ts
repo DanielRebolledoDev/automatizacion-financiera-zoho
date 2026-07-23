@@ -4,6 +4,10 @@ import { ZohoAuthService } from './zoho-auth.service';
 
 type ZohoQueryParams = Record<string, string | number | boolean | undefined>;
 
+interface ZohoRequestOptions {
+  includeOrganizationId?: boolean;
+}
+
 @Injectable()
 export class ZohoBooksService {
   constructor(
@@ -14,6 +18,7 @@ export class ZohoBooksService {
   async getFromBooks<TResponse>(
     path: string,
     queryParams: ZohoQueryParams = {},
+    options: ZohoRequestOptions = { includeOrganizationId: true },
   ): Promise<TResponse> {
     const accessToken = await this.zohoAuthService.getAccessToken();
 
@@ -22,12 +27,13 @@ export class ZohoBooksService {
       '',
     );
 
-    const organizationId = this.getRequiredConfig('ZOHO_ORGANIZATION_ID');
-
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     const url = new URL(`${booksBaseUrl}${normalizedPath}`);
 
-    url.searchParams.set('organization_id', organizationId);
+    if (options.includeOrganizationId !== false) {
+      const organizationId = this.getRequiredConfig('ZOHO_ORGANIZATION_ID');
+      url.searchParams.set('organization_id', organizationId);
+    }
 
     Object.entries(queryParams).forEach(([key, value]) => {
       if (value !== undefined) {
@@ -46,12 +52,41 @@ export class ZohoBooksService {
     const data = (await response.json().catch(() => null)) as unknown;
 
     if (!response.ok) {
-      throw new ServiceUnavailableException(
-        'Zoho Books no respondió correctamente.',
-      );
+      throw new ServiceUnavailableException({
+        message: 'Zoho Books no respondió correctamente.',
+        status: response.status,
+        response: data,
+      });
     }
 
     return data as TResponse;
+  }
+
+  async listOrganizations() {
+    return this.getFromBooks(
+      '/organizations',
+      {},
+      { includeOrganizationId: false },
+    );
+  }
+
+  async getConfiguredOrganization() {
+    const organizationId = this.getRequiredConfig('ZOHO_ORGANIZATION_ID');
+
+    return this.getFromBooks(
+      `/organizations/${organizationId}`,
+      {},
+      { includeOrganizationId: false },
+    );
+  }
+
+  async listUnpaidInvoicesTest() {
+    return this.getFromBooks('/invoices', {
+      status: 'unpaid',
+      sort_column: 'customer_name',
+      page: 1,
+      per_page: 10,
+    });
   }
 
   getConfigurationStatus() {
@@ -60,6 +95,7 @@ export class ZohoBooksService {
       clientSecretConfigured: this.hasConfig('ZOHO_CLIENT_SECRET'),
       refreshTokenConfigured: this.hasConfig('ZOHO_REFRESH_TOKEN'),
       organizationIdConfigured: this.hasConfig('ZOHO_ORGANIZATION_ID'),
+      accountsBaseUrlConfigured: this.hasConfig('ZOHO_ACCOUNTS_BASE_URL'),
       booksBaseUrlConfigured: this.hasConfig('ZOHO_BOOKS_BASE_URL'),
     };
   }

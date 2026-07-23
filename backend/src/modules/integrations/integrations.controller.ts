@@ -9,4 +9,24 @@ export class IntegrationsController {
   getStatus() {
     return this.integrationsService.getStatus();
   }
+
+  @Get('zoho/auth-test')
+  testZohoAuth() {
+    return this.integrationsService.testZohoAuth();
+  }
+
+  @Get('zoho/organizations')
+  listZohoOrganizations() {
+    return this.integrationsService.listZohoOrganizations();
+  }
+
+  @Get('zoho/configured-organization')
+  getConfiguredZohoOrganization() {
+    return this.integrationsService.getConfiguredZohoOrganization();
+  }
+
+  @Get('zoho/unpaid-invoices-test')
+  listZohoUnpaidInvoicesTest() {
+    return this.integrationsService.listZohoUnpaidInvoicesTest();
+  }
 }

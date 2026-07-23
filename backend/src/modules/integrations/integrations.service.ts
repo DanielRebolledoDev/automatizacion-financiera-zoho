@@ -1,9 +1,15 @@
-import { Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ZohoAuthService } from '../zoho/zoho-auth.service';
+import { ZohoBooksService } from '../zoho/zoho-books.service';
 
 @Injectable()
 export class IntegrationsService {
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly zohoAuthService: ZohoAuthService,
+    private readonly zohoBooksService: ZohoBooksService,
+  ) {}
 
   getStatus() {
     return {
@@ -20,6 +26,7 @@ export class IntegrationsService {
         clientSecretConfigured: this.hasConfig('ZOHO_CLIENT_SECRET'),
         refreshTokenConfigured: this.hasConfig('ZOHO_REFRESH_TOKEN'),
         organizationIdConfigured: this.hasConfig('ZOHO_ORGANIZATION_ID'),
+        accountsBaseUrl: this.getSafeValue('ZOHO_ACCOUNTS_BASE_URL'),
         booksBaseUrl: this.getSafeValue('ZOHO_BOOKS_BASE_URL'),
       },
       khipu: {
@@ -38,6 +45,62 @@ export class IntegrationsService {
         corsAllowedOrigins: this.getSafeValue('CORS_ALLOWED_ORIGINS'),
       },
     };
+  }
+
+  async testZohoAuth() {
+    this.assertDevelopmentOnly();
+
+    await this.zohoAuthService.getAccessToken();
+
+    return {
+      message: 'Autenticación con Zoho realizada correctamente.',
+      accessTokenObtained: true,
+      tokenExposed: false,
+    };
+  }
+
+  async listZohoOrganizations() {
+    this.assertDevelopmentOnly();
+
+    const organizations = await this.zohoBooksService.listOrganizations();
+
+    return {
+      message: 'Organizaciones de Zoho obtenidas correctamente.',
+      data: organizations,
+    };
+  }
+
+  async getConfiguredZohoOrganization() {
+    this.assertDevelopmentOnly();
+
+    const organization =
+      await this.zohoBooksService.getConfiguredOrganization();
+
+    return {
+      message: 'Organización configurada obtenida correctamente.',
+      data: organization,
+    };
+  }
+
+  async listZohoUnpaidInvoicesTest() {
+    this.assertDevelopmentOnly();
+
+    const invoices = await this.zohoBooksService.listUnpaidInvoicesTest();
+
+    return {
+      message: 'Facturas impagas de Zoho obtenidas correctamente.',
+      data: invoices,
+    };
+  }
+
+  private assertDevelopmentOnly() {
+    const nodeEnv = this.configService.get<string>('NODE_ENV');
+
+    if (nodeEnv === 'production') {
+      throw new ForbiddenException(
+        'Este endpoint solo está disponible en ambiente de desarrollo.',
+      );
+    }
   }
 
   private areConfigured(keys: string[]): boolean {
