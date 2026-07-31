@@ -1,4 +1,10 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { isValidRut, normalizeRut } from '../../common/utils/rut.util';
+import { ZohoDebtByRutTestDto } from './dto/zoho-debt-by-rut-test.dto';
+import {
+  ForbiddenException,
+  Injectable,
+  BadRequestException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ZohoAuthService } from '../zoho/zoho-auth.service';
 import { ZohoBooksService } from '../zoho/zoho-books.service';
@@ -90,6 +96,56 @@ export class IntegrationsService {
     return {
       message: 'Facturas impagas de Zoho obtenidas correctamente.',
       data: invoices,
+    };
+  }
+
+  async listZohoUnpaidInvoicesDebug() {
+    this.assertDevelopmentOnly();
+
+    const invoices = await this.zohoBooksService.listUnpaidInvoicesForDebug({
+      perPage: 10,
+    });
+
+    return {
+      message: 'Resumen debug de facturas impagas obtenido correctamente.',
+      data: invoices,
+    };
+  }
+
+  async findZohoDebtByRutTest(dto: ZohoDebtByRutTestDto) {
+    this.assertDevelopmentOnly();
+
+    const normalizedRut = normalizeRut(dto.rut);
+
+    if (!isValidRut(normalizedRut)) {
+      throw new BadRequestException('El RUT ingresado no es válido.');
+    }
+
+    const result =
+      await this.zohoBooksService.findUnpaidInvoiceDebtByRut(normalizedRut);
+
+    return {
+      message: 'Deuda Zoho por RUT obtenida correctamente.',
+      data: result,
+    };
+  }
+
+  async findZohoContactFirstDebtByRutTest(dto: ZohoDebtByRutTestDto) {
+    this.assertDevelopmentOnly();
+
+    const normalizedRut = normalizeRut(dto.rut);
+
+    if (!isValidRut(normalizedRut)) {
+      throw new BadRequestException('El RUT ingresado no es válido.');
+    }
+
+    const result =
+      await this.zohoBooksService.findDebtByRutUsingContactFirst(normalizedRut);
+
+    return {
+      message:
+        'Deuda Zoho por RUT obtenida correctamente usando contacto primero.',
+      data: result,
     };
   }
 

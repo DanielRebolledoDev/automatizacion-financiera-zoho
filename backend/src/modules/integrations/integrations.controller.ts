@@ -1,5 +1,6 @@
-import { Controller, Get } from '@nestjs/common';
+import { Body, Controller, Get, Post } from '@nestjs/common';
 import { IntegrationsService } from './integrations.service';
+import { ZohoDebtByRutTestDto } from './dto/zoho-debt-by-rut-test.dto';
 
 @Controller('integrations')
 export class IntegrationsController {
@@ -28,5 +29,20 @@ export class IntegrationsController {
   @Get('zoho/unpaid-invoices-test')
   listZohoUnpaidInvoicesTest() {
     return this.integrationsService.listZohoUnpaidInvoicesTest();
+  }
+
+  @Get('zoho/unpaid-invoices-debug')
+  listZohoUnpaidInvoicesDebug() {
+    return this.integrationsService.listZohoUnpaidInvoicesDebug();
+  }
+
+  @Post('zoho/debt-by-rut-test')
+  findZohoDebtByRutTest(@Body() dto: ZohoDebtByRutTestDto) {
+    return this.integrationsService.findZohoDebtByRutTest(dto);
+  }
+
+  @Post('zoho/contact-first-debt-by-rut-test')
+  findZohoContactFirstDebtByRutTest(@Body() dto: ZohoDebtByRutTestDto) {
+    return this.integrationsService.findZohoContactFirstDebtByRutTest(dto);
   }
 }
