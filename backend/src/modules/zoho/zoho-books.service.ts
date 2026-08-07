@@ -76,6 +76,54 @@ export class ZohoBooksService {
     return data as TResponse;
   }
 
+  async postToBooks<TResponse>(
+    path: string,
+    body: unknown,
+    queryParams: ZohoQueryParams = {},
+  ): Promise<TResponse> {
+    const accessToken = await this.zohoAuthService.getAccessToken();
+
+    const booksBaseUrl = this.getRequiredConfig('ZOHO_BOOKS_BASE_URL').replace(
+      /\/$/,
+      '',
+    );
+
+    const organizationId = this.getRequiredConfig('ZOHO_ORGANIZATION_ID');
+
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    const url = new URL(`${booksBaseUrl}${normalizedPath}`);
+
+    url.searchParams.set('organization_id', organizationId);
+
+    Object.entries(queryParams).forEach(([key, value]) => {
+      if (value !== undefined) {
+        url.searchParams.set(key, String(value));
+      }
+    });
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Zoho-oauthtoken ${accessToken}`,
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const data = (await response.json().catch(() => null)) as unknown;
+
+    if (!response.ok) {
+      throw new ServiceUnavailableException({
+        message: 'Zoho Books no respondió correctamente al crear el recurso.',
+        status: response.status,
+        response: data,
+      });
+    }
+
+    return data as TResponse;
+  }
+
   async listOrganizations() {
     return this.getFromBooks(
       '/organizations',

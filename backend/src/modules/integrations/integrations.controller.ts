@@ -1,4 +1,11 @@
-import { Body, Controller, Get, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Post,
+} from '@nestjs/common';
 import { IntegrationsService } from './integrations.service';
 import { ZohoDebtByRutTestDto } from './dto/zoho-debt-by-rut-test.dto';
 
@@ -44,5 +51,12 @@ export class IntegrationsController {
   @Post('zoho/contact-first-debt-by-rut-test')
   findZohoContactFirstDebtByRutTest(@Body() dto: ZohoDebtByRutTestDto) {
     return this.integrationsService.findZohoContactFirstDebtByRutTest(dto);
+  }
+
+  @Post('zoho/customer-payment-dry-run/:paymentId')
+  buildZohoCustomerPaymentDryRun(
+    @Param('paymentId', new ParseUUIDPipe()) paymentId: string,
+  ) {
+    return this.integrationsService.buildZohoCustomerPaymentDryRun(paymentId);
   }
 }

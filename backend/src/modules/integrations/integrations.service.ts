@@ -8,6 +8,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { ZohoAuthService } from '../zoho/zoho-auth.service';
 import { ZohoBooksService } from '../zoho/zoho-books.service';
+import { ZohoCustomerPaymentsService } from '../zoho/zoho-customer-payments.service';
 
 @Injectable()
 export class IntegrationsService {
@@ -15,6 +16,7 @@ export class IntegrationsService {
     private readonly configService: ConfigService,
     private readonly zohoAuthService: ZohoAuthService,
     private readonly zohoBooksService: ZohoBooksService,
+    private readonly zohoCustomerPaymentsService: ZohoCustomerPaymentsService,
   ) {}
 
   getStatus() {
@@ -145,6 +147,20 @@ export class IntegrationsService {
     return {
       message:
         'Deuda Zoho por RUT obtenida correctamente usando contacto primero.',
+      data: result,
+    };
+  }
+
+  async buildZohoCustomerPaymentDryRun(paymentId: string) {
+    this.assertDevelopmentOnly();
+
+    const result =
+      await this.zohoCustomerPaymentsService.buildCustomerPaymentDryRun(
+        paymentId,
+      );
+
+    return {
+      message: 'Dry-run de customer payment Zoho generado correctamente.',
       data: result,
     };
   }
