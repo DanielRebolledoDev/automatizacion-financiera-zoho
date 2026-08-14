@@ -22,6 +22,67 @@ interface ZohoRequestOptions {
   includeOrganizationId?: boolean;
 }
 
+interface ZohoContactsResponse {
+  code?: number;
+  message?: string;
+  contacts?: ZohoContact[];
+  page_context?: {
+    page?: number;
+    per_page?: number;
+    has_more_page?: boolean;
+  };
+}
+
+export interface ZohoMappedInvoice {
+  invoiceId: string | null;
+  invoiceNumber: string | null;
+  customerId: string | null;
+  customerName: string | null;
+  status: string | null;
+  date: string | null;
+  dueDate: string | null;
+  total: number;
+  balance: number;
+  currency: string;
+}
+
+interface ZohoContactDebtCandidate {
+  contact: ZohoContact;
+  totalDebt: number;
+  currency: string;
+  canPay: boolean;
+  invoiceCount: number;
+  invoices: ZohoMappedInvoice[];
+}
+
+export interface ZohoDebtByRutContactFirstResult {
+  normalizedRut: string;
+  contactFound: boolean;
+  contact?: {
+    contactId: string | undefined;
+    contactName: string | null;
+    companyName: string | null;
+    contactNumber: string | null;
+    contactType: string | null;
+  };
+  totalDebt: number;
+  currency: string;
+  canPay: boolean;
+  invoiceCount: number;
+  invoices: ZohoMappedInvoice[];
+  matchedContactsCount?: number;
+  selectedContactId?: string | null;
+  candidateContacts?: Array<{
+    contactId: string | null;
+    contactName: string | null;
+    companyName: string | null;
+    contactNumber: string | null;
+    contactType: string | null;
+    totalDebt: number;
+    invoiceCount: number;
+  }>;
+}
+
 @Injectable()
 export class ZohoBooksService {
   constructor(
@@ -291,73 +352,133 @@ export class ZohoBooksService {
     };
   }
 
-  async findContactByRut(normalizedRut: string): Promise<ZohoContact | null> {
-    const response = await this.getFromBooks<{
-      code?: number;
-      message?: string;
-      contacts?: ZohoContact[];
-    }>('/contacts', {
-      search_text: normalizedRut,
-      page: 1,
-      per_page: 10,
+  async findContactsByRut(normalizedRut: string): Promise<ZohoContact[]> {
+    const allContacts: ZohoContact[] = [];
+    const perPage = 200;
+    const maxPages = 5;
+
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore && page <= maxPages) {
+      const response = await this.getFromBooks<ZohoContactsResponse>(
+        '/contacts',
+        {
+          search_text: normalizedRut,
+          contact_type: 'customer',
+          page,
+          per_page: perPage,
+        },
+      );
+
+      const contacts = response.contacts ?? [];
+
+      allContacts.push(...contacts);
+
+      hasMore =
+        response.page_context?.has_more_page ?? contacts.length === perPage;
+
+      page += 1;
+    }
+
+    return allContacts.filter((contact) => {
+      if (typeof contact.contact_number !== 'string') {
+        return false;
+      }
+
+      return normalizeRut(contact.contact_number) === normalizedRut;
     });
-
-    const contacts = response.contacts ?? [];
-
-    return (
-      contacts.find((contact) => {
-        if (typeof contact.contact_number !== 'string') {
-          return false;
-        }
-
-        return normalizeRut(contact.contact_number) === normalizedRut;
-      }) ?? null
-    );
   }
 
-  async findDebtByRutUsingContactFirst(normalizedRut: string) {
+  async findContactByRut(normalizedRut: string): Promise<ZohoContact | null> {
+    const contacts = await this.findContactsByRut(normalizedRut);
+
+    return contacts[0] ?? null;
+  }
+
+  async listUnpaidInvoicesByContactId(
+    contactId: string,
+    maxPages = 5,
+  ): Promise<ZohoInvoice[]> {
+    const allInvoices: ZohoInvoice[] = [];
+    const perPage = 200;
+
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore && page <= maxPages) {
+      const response = await this.getFromBooks<ZohoInvoicesResponse>(
+        '/invoices',
+        {
+          customer_id: contactId,
+          status: 'unpaid',
+          sort_column: 'due_date',
+          page,
+          per_page: perPage,
+        },
+      );
+
+      const invoices = response.invoices ?? [];
+
+      allInvoices.push(...invoices);
+
+      hasMore =
+        response.page_context?.has_more_page ?? invoices.length === perPage;
+
+      page += 1;
+    }
+
+    return allInvoices;
+  }
+
+  async listInvoicesByContactIdForDebug(
+    contactId: string,
+  ): Promise<ZohoInvoice[]> {
+    const allInvoices: ZohoInvoice[] = [];
+    const perPage = 200;
+
+    let page = 1;
+    let hasMore = true;
+
+    while (hasMore) {
+      const response = await this.getFromBooks<ZohoInvoicesResponse>(
+        '/invoices',
+        {
+          customer_id: contactId,
+          sort_column: 'due_date',
+          page,
+          per_page: perPage,
+        },
+      );
+
+      const invoices = response.invoices ?? [];
+
+      allInvoices.push(...invoices);
+
+      hasMore =
+        response.page_context?.has_more_page ?? invoices.length === perPage;
+
+      page += 1;
+    }
+
+    return allInvoices;
+  }
+
+  async listInvoicesByRutForDebug(normalizedRut: string) {
     const contact = await this.findContactByRut(normalizedRut);
 
     if (!contact?.contact_id) {
       return {
         normalizedRut,
         contactFound: false,
-        totalDebt: 0,
-        currency: 'CLP',
-        canPay: false,
+        contact: null,
         invoiceCount: 0,
         invoices: [],
       };
     }
 
-    const response = await this.getFromBooks<ZohoInvoicesResponse>(
-      '/invoices',
-      {
-        customer_id: contact.contact_id,
-        status: 'unpaid',
-        page: 1,
-        per_page: 200,
-      },
-    );
-
-    const invoices = response.invoices ?? [];
-
-    const mappedInvoices = invoices.map((invoice) => ({
-      invoiceId: invoice.invoice_id ?? null,
-      invoiceNumber: invoice.invoice_number ?? null,
-      customerId: invoice.customer_id ?? null,
-      customerName: invoice.customer_name ?? null,
-      status: invoice.status ?? null,
-      date: invoice.date ?? null,
-      dueDate: invoice.due_date ?? null,
-      total: Number(invoice.total ?? 0),
-      balance: Number(invoice.balance ?? 0),
-      currency: invoice.currency_code ?? 'CLP',
-    }));
-
-    const totalDebt = mappedInvoices.reduce(
-      (sum, invoice) => sum + invoice.balance,
-      0,
+    const invoices = await this.listInvoicesByContactIdForDebug(
+      contact.contact_id,
     );
 
     return {
@@ -369,11 +490,188 @@ export class ZohoBooksService {
         companyName: contact.company_name ?? null,
         contactNumber: contact.contact_number ?? null,
       },
-      totalDebt,
-      currency: mappedInvoices[0]?.currency ?? 'CLP',
-      canPay: totalDebt > 0,
-      invoiceCount: mappedInvoices.length,
-      invoices: mappedInvoices,
+      invoiceCount: invoices.length,
+      invoices: invoices.map((invoice) => ({
+        invoiceId: invoice.invoice_id ?? null,
+        invoiceNumber: invoice.invoice_number ?? null,
+        customerId: invoice.customer_id ?? null,
+        customerName: invoice.customer_name ?? null,
+        status: invoice.status ?? null,
+        date: invoice.date ?? null,
+        dueDate: invoice.due_date ?? null,
+        total: Number(invoice.total ?? 0),
+        balance: Number(invoice.balance ?? 0),
+        currency: invoice.currency_code ?? 'CLP',
+        cfDteEmitido:
+          typeof invoice.cf_dte_emitido === 'string'
+            ? invoice.cf_dte_emitido
+            : null,
+        cfDteEstado:
+          typeof invoice.cf_dte_estado === 'string'
+            ? invoice.cf_dte_estado
+            : null,
+        cfDteFolio:
+          typeof invoice.cf_dte_folio === 'string'
+            ? invoice.cf_dte_folio
+            : null,
+        cfDteMontoTotal:
+          typeof invoice.cf_dte_monto_total === 'string'
+            ? invoice.cf_dte_monto_total
+            : null,
+        availableKeys: Object.keys(invoice),
+      })),
+    };
+  }
+
+  async findDebtByRutUsingContactFirst(
+    normalizedRut: string,
+  ): Promise<ZohoDebtByRutContactFirstResult> {
+    const contacts = await this.findContactsByRut(normalizedRut);
+
+    if (contacts.length === 0) {
+      return {
+        normalizedRut,
+        contactFound: false,
+        totalDebt: 0,
+        currency: 'CLP',
+        canPay: false,
+        invoiceCount: 0,
+        invoices: [],
+      };
+    }
+
+    const sortedContacts = [...contacts].sort(
+      (a, b) =>
+        this.getContactReceivableAmount(b) - this.getContactReceivableAmount(a),
+    );
+
+    const evaluatedCandidates: ZohoContactDebtCandidate[] = [];
+
+    for (const contact of sortedContacts) {
+      if (!contact.contact_id) {
+        continue;
+      }
+
+      const invoices = await this.listUnpaidInvoicesByContactId(
+        contact.contact_id,
+        3,
+      );
+
+      const mappedInvoices = invoices.map((invoice) =>
+        this.mapZohoInvoice(invoice),
+      );
+
+      const totalDebt = this.calculateTotalDebt(mappedInvoices);
+
+      const candidate: ZohoContactDebtCandidate = {
+        contact,
+        totalDebt,
+        currency: mappedInvoices[0]?.currency ?? 'CLP',
+        canPay: totalDebt > 0,
+        invoiceCount: mappedInvoices.length,
+        invoices: mappedInvoices,
+      };
+
+      evaluatedCandidates.push(candidate);
+
+      if (candidate.totalDebt > 0) {
+        return this.buildContactFirstDebtResult(
+          normalizedRut,
+          contacts.length,
+          candidate,
+          evaluatedCandidates,
+        );
+      }
+    }
+
+    const fallbackCandidate = evaluatedCandidates[0];
+
+    if (!fallbackCandidate) {
+      return {
+        normalizedRut,
+        contactFound: false,
+        totalDebt: 0,
+        currency: 'CLP',
+        canPay: false,
+        invoiceCount: 0,
+        invoices: [],
+      };
+    }
+
+    return this.buildContactFirstDebtResult(
+      normalizedRut,
+      contacts.length,
+      fallbackCandidate,
+      evaluatedCandidates,
+    );
+  }
+
+  private mapZohoInvoice(invoice: ZohoInvoice): ZohoMappedInvoice {
+    return {
+      invoiceId: invoice.invoice_id ?? null,
+      invoiceNumber: invoice.invoice_number ?? null,
+      customerId: invoice.customer_id ?? null,
+      customerName: invoice.customer_name ?? null,
+      status: invoice.status ?? null,
+      date: invoice.date ?? null,
+      dueDate: invoice.due_date ?? null,
+      total: Number(invoice.total ?? 0),
+      balance: Number(invoice.balance ?? 0),
+      currency: invoice.currency_code ?? 'CLP',
+    };
+  }
+
+  private calculateTotalDebt(invoices: ZohoMappedInvoice[]): number {
+    return invoices.reduce((sum, invoice) => sum + invoice.balance, 0);
+  }
+
+  private getContactReceivableAmount(contact: ZohoContact): number {
+    const value = contact['outstanding_receivable_amount'];
+    const numberValue = Number(value ?? 0);
+
+    return Number.isFinite(numberValue) ? numberValue : 0;
+  }
+
+  private buildContactFirstDebtResult(
+    normalizedRut: string,
+    matchedContactsCount: number,
+    selectedCandidate: ZohoContactDebtCandidate,
+    evaluatedCandidates: ZohoContactDebtCandidate[],
+  ): ZohoDebtByRutContactFirstResult {
+    const selectedContact = selectedCandidate.contact;
+
+    return {
+      normalizedRut,
+      contactFound: true,
+      contact: {
+        contactId: selectedContact.contact_id,
+        contactName: selectedContact.contact_name ?? null,
+        companyName: selectedContact.company_name ?? null,
+        contactNumber: selectedContact.contact_number ?? null,
+        contactType:
+          typeof selectedContact.contact_type === 'string'
+            ? selectedContact.contact_type
+            : null,
+      },
+      totalDebt: selectedCandidate.totalDebt,
+      currency: selectedCandidate.currency,
+      canPay: selectedCandidate.canPay,
+      invoiceCount: selectedCandidate.invoiceCount,
+      invoices: selectedCandidate.invoices,
+      matchedContactsCount,
+      selectedContactId: selectedContact.contact_id ?? null,
+      candidateContacts: evaluatedCandidates.map((candidate) => ({
+        contactId: candidate.contact.contact_id ?? null,
+        contactName: candidate.contact.contact_name ?? null,
+        companyName: candidate.contact.company_name ?? null,
+        contactNumber: candidate.contact.contact_number ?? null,
+        contactType:
+          typeof candidate.contact.contact_type === 'string'
+            ? candidate.contact.contact_type
+            : null,
+        totalDebt: candidate.totalDebt,
+        invoiceCount: candidate.invoiceCount,
+      })),
     };
   }
 

@@ -165,6 +165,40 @@ export class IntegrationsService {
     };
   }
 
+  async syncZohoCustomerPaymentTest(paymentId: string) {
+    this.assertDevelopmentOnly();
+
+    const result =
+      await this.zohoCustomerPaymentsService.syncCustomerPaymentToZoho(
+        paymentId,
+      );
+
+    return {
+      message: result.sentToZoho
+        ? 'Pago enviado a Zoho correctamente.'
+        : 'Envío real a Zoho bloqueado. Se generó dry-run.',
+      data: result,
+    };
+  }
+
+  async listZohoInvoicesByRutDebug(dto: ZohoDebtByRutTestDto) {
+    this.assertDevelopmentOnly();
+
+    const normalizedRut = normalizeRut(dto.rut);
+
+    if (!isValidRut(normalizedRut)) {
+      throw new BadRequestException('El RUT ingresado no es válido.');
+    }
+
+    const result =
+      await this.zohoBooksService.listInvoicesByRutForDebug(normalizedRut);
+
+    return {
+      message: 'Facturas Zoho por RUT obtenidas correctamente para debug.',
+      data: result,
+    };
+  }
+
   private assertDevelopmentOnly() {
     const nodeEnv = this.configService.get<string>('NODE_ENV');
 

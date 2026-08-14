@@ -59,4 +59,16 @@ export class IntegrationsController {
   ) {
     return this.integrationsService.buildZohoCustomerPaymentDryRun(paymentId);
   }
+
+  @Post('zoho/customer-payment-sync-test/:paymentId')
+  syncZohoCustomerPaymentTest(
+    @Param('paymentId', new ParseUUIDPipe()) paymentId: string,
+  ) {
+    return this.integrationsService.syncZohoCustomerPaymentTest(paymentId);
+  }
+
+  @Post('zoho/invoices-by-rut-debug')
+  listZohoInvoicesByRutDebug(@Body() dto: ZohoDebtByRutTestDto) {
+    return this.integrationsService.listZohoInvoicesByRutDebug(dto);
+  }
 }

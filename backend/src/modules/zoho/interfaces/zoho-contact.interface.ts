@@ -3,6 +3,7 @@ export interface ZohoContact {
   contact_name?: string;
   company_name?: string;
   contact_number?: string;
+  contact_type?: string;
   email?: string;
   phone?: string;
   mobile?: string;

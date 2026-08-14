@@ -21,6 +21,13 @@ enum CustomerStatus {
   BLOCKED
 }
 
+enum ZohoSyncStatus {
+  NOT_SYNCED
+  DRY_RUN_READY
+  SYNCED
+  FAILED
+}
+
 enum DocumentType {
   INVOICE
   CREDIT_NOTE
@@ -105,17 +112,21 @@ model CustomerDocument {
 }
 
 model Payment {
-  id              String        @id @default(uuid()) @db.Char(36)
-  customerId      String        @map("customer_id") @db.Char(36)
-  mode            PaymentMode
-  amount          Int
-  currency        String        @default("CLP") @db.VarChar(10)
-  status          PaymentStatus @default(CREATED)
-  idempotencyKey  String        @unique @map("idempotency_key") @db.VarChar(200)
-  khipuPaymentId  String?       @unique @map("khipu_payment_id") @db.VarChar(100)
-  khipuPaymentUrl String?       @map("khipu_payment_url") @db.Text
-  expiresAt       DateTime?     @map("expires_at")
-  paidAt          DateTime?     @map("paid_at")
+  id                    String         @id @default(uuid()) @db.Char(36)
+  customerId            String         @map("customer_id") @db.Char(36)
+  mode                  PaymentMode
+  amount                Int
+  currency              String         @default("CLP") @db.VarChar(10)
+  status                PaymentStatus  @default(CREATED)
+  idempotencyKey        String         @unique @map("idempotency_key") @db.VarChar(200)
+  khipuPaymentId        String?        @unique @map("khipu_payment_id") @db.VarChar(100)
+  khipuPaymentUrl       String?        @map("khipu_payment_url") @db.Text
+  expiresAt             DateTime?      @map("expires_at")
+  paidAt                DateTime?      @map("paid_at")
+  zohoCustomerPaymentId String?        @unique @db.VarChar(100)
+  zohoSyncedAt          DateTime?
+  zohoSyncStatus        ZohoSyncStatus @default(NOT_SYNCED)
+  zohoSyncError         String?        @db.Text
 
   customer Customer @relation(fields: [customerId], references: [id], onDelete: Restrict)
 
@@ -129,6 +140,7 @@ model Payment {
   @@index([customerId])
   @@index([status])
   @@index([mode])
+  @@index([zohoSyncStatus])
   @@map("payments")
 }
 
