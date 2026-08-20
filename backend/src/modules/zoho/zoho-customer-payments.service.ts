@@ -14,6 +14,7 @@ import type {
   ZohoCustomerPaymentSyncResult,
 } from './interfaces/zoho-customer-payment.interface';
 import { ZohoBooksService } from './zoho-books.service';
+import { normalizeRut } from '../../common/utils/rut.util';
 
 @Injectable()
 export class ZohoCustomerPaymentsService {
@@ -82,6 +83,13 @@ export class ZohoCustomerPaymentsService {
       select: {
         zohoCustomerPaymentId: true,
         zohoSyncStatus: true,
+        customer: {
+          select: {
+            rut: true,
+            rutNormalized: true,
+            businessName: true,
+          },
+        },
       },
     });
 
@@ -90,6 +98,12 @@ export class ZohoCustomerPaymentsService {
         'Este pago ya fue sincronizado con Zoho anteriormente.',
       );
     }
+
+    if (!payment) {
+      throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    this.assertCustomerIsAllowedForZohoWrite(payment.customer.rutNormalized);
 
     try {
       const zohoResponse =
@@ -219,6 +233,29 @@ export class ZohoCustomerPaymentsService {
       description: `Pago registrado desde Portal Pago Express. Pago local: ${payment.id}`,
       invoices,
     };
+  }
+
+  private assertCustomerIsAllowedForZohoWrite(rutNormalized: string): void {
+    const rawAllowedRuts =
+      this.configService.get<string>('ZOHO_PAYMENT_ALLOWED_RUTS')?.trim() ?? '';
+
+    const allowedRuts = rawAllowedRuts
+      .split(',')
+      .map((rut) => rut.trim())
+      .filter(Boolean)
+      .map((rut) => normalizeRut(rut));
+
+    if (allowedRuts.length === 0) {
+      throw new BadRequestException(
+        'No hay RUTs autorizados para escritura real en Zoho. Configura ZOHO_PAYMENT_ALLOWED_RUTS.',
+      );
+    }
+
+    if (!allowedRuts.includes(rutNormalized)) {
+      throw new BadRequestException(
+        `El RUT ${rutNormalized} no está autorizado para escritura real en Zoho.`,
+      );
+    }
   }
 
   private formatDate(date: Date): string {

@@ -73,6 +73,14 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   KHIPU_WEBHOOK_SECRET?: string;
+
+  @IsOptional()
+  @IsString()
+  ZOHO_CUSTOMER_PAYMENT_MODE?: string;
+
+  @IsOptional()
+  @IsString()
+  ZOHO_WRITE_PAYMENTS_ENABLED?: string;
 }
 
 export function validate(config: Record<string, unknown>) {
