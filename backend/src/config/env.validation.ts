@@ -81,6 +81,22 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   ZOHO_WRITE_PAYMENTS_ENABLED?: string;
+
+  @IsOptional()
+  @IsString()
+  ZOHO_AUTO_SYNC_PAYMENTS_ENABLED?: string;
+
+  @IsOptional()
+  @IsString()
+  KHIPU_PROVIDER?: string;
+
+  @IsOptional()
+  @IsString()
+  KHIPU_API_KEY?: string;
+
+  @IsOptional()
+  @IsString()
+  KHIPU_NOTIFY_API_VERSION?: string;
 }
 
 export function validate(config: Record<string, unknown>) {

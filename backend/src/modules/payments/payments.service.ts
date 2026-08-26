@@ -3,6 +3,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   DocumentStatus,
   EventSource,
@@ -14,6 +15,7 @@ import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KhipuService } from '../khipu/khipu.service';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { ZohoCustomerPaymentsService } from '../zoho/zoho-customer-payments.service';
 
 const ACTIVE_PAYMENT_STATUSES = [
   PaymentStatus.CREATED,
@@ -26,6 +28,8 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly khipuService: KhipuService,
+    private readonly configService: ConfigService,
+    private readonly zohoCustomerPaymentsService: ZohoCustomerPaymentsService,
   ) {}
 
   async createPayment(createPaymentDto: CreatePaymentDto) {
@@ -340,11 +344,12 @@ export class PaymentsService {
         },
       });
     });
-
+    const zohoSync = await this.tryAutoSyncPaidPaymentWithZoho(paymentId);
     return {
       message: 'Pago mock procesado correctamente.',
       alreadyProcessed: false,
       payment: this.mapPaymentResponse(updatedPayment),
+      zohoSync,
     };
   }
 
@@ -450,13 +455,22 @@ export class PaymentsService {
     amount: number;
     mode: PaymentMode;
   }) {
+    const frontendUrl = this.getFrontendBaseUrl();
+    const publicBackendUrl = this.getPublicBackendBaseUrl();
+
     const khipuPayment = await this.khipuService.createPayment({
-      paymentId: params.paymentId,
+      localPaymentId: params.paymentId,
       amount: params.amount,
       currency: 'CLP',
       subject: `Pago ${params.mode} - ${params.customer.businessName}`,
-      customerRut: params.customer.rut,
+      body: `Pago generado desde Portal Pago Express. ID local: ${params.paymentId}`,
+      returnUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}`,
+      cancelUrl: `${frontendUrl}/pago-express`,
+      notifyUrl: `${publicBackendUrl}/api/webhooks/khipu/real`,
     });
+
+    const provider =
+      this.configService.get<string>('KHIPU_PROVIDER')?.trim() ?? 'mock';
 
     return this.prisma.payment.update({
       where: {
@@ -466,7 +480,7 @@ export class PaymentsService {
         status: PaymentStatus.PENDING,
         khipuPaymentId: khipuPayment.paymentId,
         khipuPaymentUrl: khipuPayment.paymentUrl,
-        expiresAt: new Date(khipuPayment.expiresAt),
+        expiresAt: khipuPayment.expiresAt ?? null,
         attempts: {
           create: {
             customerId: params.customer.id,
@@ -474,14 +488,19 @@ export class PaymentsService {
             amount: params.amount,
             status: PaymentStatus.PENDING,
             requestPayload: {
-              provider: 'MOCK_KHIPU',
+              provider: provider === 'real' ? 'KHIPU_REAL' : 'MOCK_KHIPU',
               paymentId: params.paymentId,
               amount: params.amount,
               currency: 'CLP',
               subject: `Pago ${params.mode} - ${params.customer.businessName}`,
               customerRut: params.customer.rut,
+              returnUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}`,
+              cancelUrl: `${frontendUrl}/pago-express`,
+              notifyUrl: `${publicBackendUrl}/api/webhooks/khipu/real`,
             },
-            responsePayload: khipuPayment as unknown as Prisma.InputJsonValue,
+            responsePayload: JSON.parse(
+              JSON.stringify(khipuPayment),
+            ) as Prisma.InputJsonValue,
           },
         },
       },
@@ -585,5 +604,63 @@ export class PaymentsService {
         status: paymentDocument.document.status,
       })),
     };
+  }
+  private async tryAutoSyncPaidPaymentWithZoho(paymentId: string) {
+    const autoSyncEnabled =
+      this.configService.get<string>('ZOHO_AUTO_SYNC_PAYMENTS_ENABLED') ===
+      'true';
+
+    if (!autoSyncEnabled) {
+      return {
+        enabled: false,
+        attempted: false,
+        sentToZoho: false,
+        message: 'Sincronización automática con Zoho desactivada.',
+      };
+    }
+
+    try {
+      const result =
+        await this.zohoCustomerPaymentsService.syncCustomerPaymentToZoho(
+          paymentId,
+        );
+
+      return {
+        enabled: true,
+        attempted: true,
+        sentToZoho: result.sentToZoho,
+        zohoCustomerPaymentId: result.zohoCustomerPaymentId,
+        dryRun: result.dryRun,
+      };
+    } catch (error) {
+      return {
+        enabled: true,
+        attempted: true,
+        sentToZoho: false,
+        error:
+          error instanceof Error
+            ? error.message
+            : 'Error desconocido al sincronizar pago con Zoho.',
+      };
+    }
+  }
+
+  private getFrontendBaseUrl(): string {
+    const corsOrigins =
+      this.configService.get<string>('CORS_ALLOWED_ORIGINS')?.trim() ?? '';
+
+    const firstOrigin = corsOrigins
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean)[0];
+
+    return firstOrigin || 'http://localhost:5173';
+  }
+
+  private getPublicBackendBaseUrl(): string {
+    const publicBackendUrl =
+      this.configService.get<string>('PUBLIC_BACKEND_URL')?.trim() ?? '';
+
+    return publicBackendUrl.replace(/\/$/, '') || 'http://localhost:3000';
   }
 }
