@@ -14,6 +14,7 @@ import {
 import { createHash } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KhipuService } from '../khipu/khipu.service';
+import type { KhipuWebhookPayload } from '../khipu/interfaces/khipu-webhook.interface';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { ZohoCustomerPaymentsService } from '../zoho/zoho-customer-payments.service';
 
@@ -347,6 +348,160 @@ export class PaymentsService {
     const zohoSync = await this.tryAutoSyncPaidPaymentWithZoho(paymentId);
     return {
       message: 'Pago mock procesado correctamente.',
+      alreadyProcessed: false,
+      payment: this.mapPaymentResponse(updatedPayment),
+      zohoSync,
+    };
+  }
+
+  async markPaymentAsPaidFromKhipuWebhook(params: {
+    localPaymentId: string;
+    khipuPaymentId: string;
+    amount: number;
+    currency: string;
+    payload: KhipuWebhookPayload;
+  }) {
+    const payment = await this.prisma.payment.findUnique({
+      where: {
+        id: params.localPaymentId,
+      },
+      include: {
+        customer: {
+          select: {
+            id: true,
+            rut: true,
+            businessName: true,
+          },
+        },
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException(
+        'No se encontró el pago informado por Khipu.',
+      );
+    }
+
+    if (payment.khipuPaymentId !== params.khipuPaymentId) {
+      throw new BadRequestException(
+        'El payment_id informado por Khipu no coincide con el pago local.',
+      );
+    }
+
+    if (payment.amount !== Math.round(params.amount)) {
+      throw new BadRequestException(
+        'El monto informado por Khipu no coincide con el pago local.',
+      );
+    }
+
+    if (payment.currency !== params.currency) {
+      throw new BadRequestException(
+        'La moneda informada por Khipu no coincide con el pago local.',
+      );
+    }
+
+    if (payment.status === PaymentStatus.PAID) {
+      return {
+        message: 'El pago ya se encontraba marcado como pagado.',
+        alreadyProcessed: true,
+        payment: this.mapPaymentResponse(payment),
+      };
+    }
+
+    if (
+      payment.status === PaymentStatus.CANCELLED ||
+      payment.status === PaymentStatus.FAILED ||
+      payment.status === PaymentStatus.EXPIRED
+    ) {
+      throw new BadRequestException(
+        'No se puede marcar como pagado un pago cancelado, fallido o expirado.',
+      );
+    }
+
+    const now = new Date();
+    const documentIds = payment.documents.map(
+      (paymentDocument) => paymentDocument.documentId,
+    );
+
+    const safePayload = JSON.parse(
+      JSON.stringify(params.payload),
+    ) as Prisma.InputJsonValue;
+
+    const updatedPayment = await this.prisma.$transaction(async (tx) => {
+      await tx.payment.update({
+        where: {
+          id: payment.id,
+        },
+        data: {
+          status: PaymentStatus.PAID,
+          paidAt: now,
+        },
+      });
+
+      await tx.customerDocument.updateMany({
+        where: {
+          id: {
+            in: documentIds,
+          },
+        },
+        data: {
+          status: DocumentStatus.PAID,
+          outstandingAmount: 0,
+        },
+      });
+
+      await tx.paymentEvent.create({
+        data: {
+          paymentId: payment.id,
+          eventSource: EventSource.KHIPU,
+          eventType: 'payment.paid.real',
+          externalEventId: `khipu-paid-${params.khipuPaymentId}`,
+          payload: safePayload,
+          processed: true,
+          processedAt: now,
+        },
+      });
+
+      await tx.paymentAttempt.create({
+        data: {
+          paymentId: payment.id,
+          customerId: payment.customer.id,
+          mode: payment.mode,
+          amount: payment.amount,
+          status: PaymentStatus.PAID,
+          requestPayload: {
+            provider: 'KHIPU_REAL',
+            action: 'webhook-paid',
+            paymentId: payment.id,
+            khipuPaymentId: params.khipuPaymentId,
+          },
+          responsePayload: safePayload,
+        },
+      });
+
+      return tx.payment.findUniqueOrThrow({
+        where: {
+          id: payment.id,
+        },
+        include: {
+          documents: {
+            include: {
+              document: true,
+            },
+          },
+        },
+      });
+    });
+
+    const zohoSync = await this.tryAutoSyncPaidPaymentWithZoho(payment.id);
+
+    return {
+      message: 'Pago real de Khipu procesado correctamente.',
       alreadyProcessed: false,
       payment: this.mapPaymentResponse(updatedPayment),
       zohoSync,
