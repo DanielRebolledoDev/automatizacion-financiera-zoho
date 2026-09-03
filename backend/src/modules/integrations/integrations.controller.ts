@@ -8,10 +8,14 @@ import {
 } from '@nestjs/common';
 import { IntegrationsService } from './integrations.service';
 import { ZohoDebtByRutTestDto } from './dto/zoho-debt-by-rut-test.dto';
+import { KhipuService } from '../khipu/khipu.service';
 
 @Controller('integrations')
 export class IntegrationsController {
-  constructor(private readonly integrationsService: IntegrationsService) {}
+  constructor(
+    private readonly integrationsService: IntegrationsService,
+    private readonly khipuService: KhipuService,
+  ) {}
 
   @Get('status')
   getStatus() {
@@ -70,5 +74,15 @@ export class IntegrationsController {
   @Post('zoho/invoices-by-rut-debug')
   listZohoInvoicesByRutDebug(@Body() dto: ZohoDebtByRutTestDto) {
     return this.integrationsService.listZohoInvoicesByRutDebug(dto);
+  }
+
+  @Get('khipu/auth-test')
+  testKhipuConnection() {
+    return this.khipuService.testConnection();
+  }
+
+  @Get('khipu/payments/:khipuPaymentId')
+  getKhipuPaymentById(@Param('khipuPaymentId') khipuPaymentId: string) {
+    return this.khipuService.getPaymentById(khipuPaymentId);
   }
 }

@@ -97,6 +97,14 @@ class EnvironmentVariables {
   @IsOptional()
   @IsString()
   KHIPU_NOTIFY_API_VERSION?: string;
+
+  @IsOptional()
+  @IsString()
+  KHIPU_AUTH_MODE?: string;
+
+  @IsOptional()
+  @IsString()
+  KHIPU_VALIDATE_WEBHOOK_SIGNATURE?: string;
 }
 
 export function validate(config: Record<string, unknown>) {

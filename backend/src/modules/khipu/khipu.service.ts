@@ -52,30 +52,34 @@ export class KhipuService {
   private async createRealPayment(
     params: CreateKhipuPaymentParams,
   ): Promise<KhipuPaymentResponse> {
-    const apiKey = this.getRequiredConfig('KHIPU_API_KEY');
     const baseUrl = this.getRequiredConfig('KHIPU_BASE_URL').replace(/\/$/, '');
     const notifyApiVersion =
       this.configService.get<string>('KHIPU_NOTIFY_API_VERSION')?.trim() ??
       '3.0';
+
+    const requestBody: Record<string, unknown> = {
+      amount: params.amount,
+      currency: params.currency,
+      subject: params.subject,
+      body: params.body,
+      transaction_id: params.localPaymentId,
+      return_url: params.returnUrl,
+      cancel_url: params.cancelUrl,
+    };
+
+    if (this.shouldSendNotifyUrl(params.notifyUrl)) {
+      requestBody.notify_url = params.notifyUrl;
+      requestBody.notify_api_version = notifyApiVersion;
+    }
 
     const response = await fetch(`${baseUrl}/payments`, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
+        ...this.getKhipuAuthHeaders(),
       },
-      body: JSON.stringify({
-        amount: params.amount,
-        currency: params.currency,
-        subject: params.subject,
-        body: params.body,
-        transaction_id: params.localPaymentId,
-        return_url: params.returnUrl,
-        cancel_url: params.cancelUrl,
-        notify_url: params.notifyUrl,
-        notify_api_version: notifyApiVersion,
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     const data = (await response
@@ -109,6 +113,37 @@ export class KhipuService {
     };
   }
 
+  async getPaymentById(khipuPaymentId: string) {
+    const baseUrl = this.getRequiredConfig('KHIPU_BASE_URL').replace(/\/$/, '');
+
+    const response = await fetch(
+      `${baseUrl}/payments/${encodeURIComponent(khipuPaymentId)}`,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...this.getKhipuAuthHeaders(),
+        },
+      },
+    );
+
+    const data = (await response.json().catch(() => null)) as unknown;
+
+    if (!response.ok) {
+      throw new ServiceUnavailableException({
+        message: 'Khipu no respondió correctamente al consultar el pago.',
+        status: response.status,
+        response: data,
+      });
+    }
+
+    return {
+      ok: true,
+      paymentId: khipuPaymentId,
+      response: data,
+    };
+  }
+
   private getFrontendBaseUrl(): string {
     const corsOrigins =
       this.configService.get<string>('CORS_ALLOWED_ORIGINS')?.trim() ?? '';
@@ -121,6 +156,75 @@ export class KhipuService {
     return firstOrigin || 'http://localhost:5173';
   }
 
+  private getKhipuAuthHeaders(): Record<string, string> {
+    const authMode =
+      this.configService.get<string>('KHIPU_AUTH_MODE')?.trim() ?? 'api_key';
+
+    if (authMode === 'basic') {
+      const receiverId = this.getRequiredConfig('KHIPU_RECEIVER_ID');
+      const secretKey = this.getRequiredConfig('KHIPU_SECRET_KEY');
+
+      const encodedCredentials = Buffer.from(
+        `${receiverId}:${secretKey}`,
+        'utf8',
+      ).toString('base64');
+
+      return {
+        Authorization: `Basic ${encodedCredentials}`,
+      };
+    }
+
+    const apiKey = this.getRequiredConfig('KHIPU_API_KEY');
+
+    return {
+      'x-api-key': apiKey,
+    };
+  }
+
+  async testConnection() {
+    const baseUrl = this.getRequiredConfig('KHIPU_BASE_URL').replace(/\/$/, '');
+
+    const response = await fetch(`${baseUrl}/banks`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...this.getKhipuAuthHeaders(),
+      },
+    });
+
+    const data = (await response.json().catch(() => null)) as unknown;
+
+    if (!response.ok) {
+      throw new ServiceUnavailableException({
+        message: 'Khipu no respondió correctamente al probar conexión.',
+        status: response.status,
+        response: data,
+      });
+    }
+
+    return {
+      ok: true,
+      provider: this.configService.get<string>('KHIPU_PROVIDER') ?? 'mock',
+      authMode: this.configService.get<string>('KHIPU_AUTH_MODE') ?? 'api_key',
+      response: data,
+    };
+  }
+
+  private shouldSendNotifyUrl(notifyUrl: string): boolean {
+    if (!notifyUrl) {
+      return false;
+    }
+
+    if (notifyUrl.includes('localhost')) {
+      return false;
+    }
+
+    if (notifyUrl.includes('127.0.0.1')) {
+      return false;
+    }
+
+    return notifyUrl.startsWith('https://');
+  }
   private getRequiredConfig(key: string): string {
     const value = this.configService.get<string>(key)?.trim();
 
