@@ -28,3 +28,17 @@ export interface KhipuCreatePaymentApiResponse {
   app_url?: string;
   ready_for_terminal?: boolean;
 }
+
+export interface KhipuPaymentStatusApiResponse {
+  payment_id: string;
+  payment_url?: string;
+  amount: string;
+  currency: string;
+  status: 'pending' | 'verifying' | 'done';
+  status_detail?: string;
+  transaction_id?: string;
+  expires_date?: string;
+  conciliation_date?: string;
+
+  [key: string]: unknown;
+}

@@ -24,4 +24,16 @@ export class PaymentsController {
   ) {
     return this.paymentsService.findPaymentStatusById(paymentId);
   }
+
+  @Post(':paymentId/refresh-khipu-status')
+  refreshKhipuStatus(
+    @Param('paymentId', new ParseUUIDPipe()) paymentId: string,
+  ) {
+    return this.paymentsService.refreshPaymentStatusFromKhipu(paymentId);
+  }
+
+  @Post(':paymentId/cancel')
+  cancelPayment(@Param('paymentId', new ParseUUIDPipe()) paymentId: string) {
+    return this.paymentsService.cancelKhipuPayment(paymentId);
+  }
 }

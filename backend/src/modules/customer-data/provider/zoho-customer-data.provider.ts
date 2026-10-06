@@ -8,6 +8,12 @@ import type {
   PaymentExpressDebtSummary,
 } from '../interfaces/customer-data-provider.interface';
 
+const PAYABLE_DOCUMENT_STATUSES: DocumentStatus[] = [
+  DocumentStatus.PENDING,
+  DocumentStatus.OVERDUE,
+  DocumentStatus.PARTIALLY_PAID,
+];
+
 @Injectable()
 export class ZohoCustomerDataProvider implements CustomerDataProvider {
   constructor(
@@ -47,6 +53,12 @@ export class ZohoCustomerDataProvider implements CustomerDataProvider {
   }
 
   private async syncCustomerDebtFromZoho(normalizedRut: string) {
+    /*
+     * Zoho es la fuente de verdad.
+     *
+     * findDebtByRutUsingContactFirst devuelve las facturas que actualmente
+     * están pendientes de pago en Zoho.
+     */
     const zohoDebt =
       await this.zohoBooksService.findDebtByRutUsingContactFirst(normalizedRut);
 
@@ -59,65 +71,150 @@ export class ZohoCustomerDataProvider implements CustomerDataProvider {
       zohoDebt.contact.contactName?.trim() ||
       'Cliente Zoho';
 
-    const customer = await this.prisma.customer.upsert({
-      where: {
-        rutNormalized: normalizedRut,
-      },
-      update: {
-        rut: zohoDebt.contact.contactNumber ?? normalizedRut,
-        businessName,
-        zohoCustomerId: zohoDebt.contact.contactId,
-        status: CustomerStatus.ACTIVE,
-      },
-      create: {
-        rut: zohoDebt.contact.contactNumber ?? normalizedRut,
-        rutNormalized: normalizedRut,
-        businessName,
-        zohoCustomerId: zohoDebt.contact.contactId,
-        status: CustomerStatus.ACTIVE,
-      },
-    });
+    /*
+     * IDs y números que Zoho indica que actualmente siguen siendo pagables.
+     */
+    const currentZohoDocumentIds = new Set(
+      zohoDebt.invoices
+        .map((invoice) => invoice.invoiceId)
+        .filter((invoiceId): invoiceId is string => Boolean(invoiceId)),
+    );
 
-    for (const invoice of zohoDebt.invoices) {
-      const documentNumber =
-        invoice.invoiceNumber ?? invoice.invoiceId ?? `ZOHO-${Date.now()}`;
+    const currentDocumentNumbers = new Set(
+      zohoDebt.invoices
+        .map((invoice) => invoice.invoiceNumber)
+        .filter((invoiceNumber): invoiceNumber is string =>
+          Boolean(invoiceNumber),
+        ),
+    );
 
-      await this.prisma.customerDocument.upsert({
+    const result = await this.prisma.$transaction(async (tx) => {
+      const customer = await tx.customer.upsert({
         where: {
-          customerId_documentNumber: {
-            customerId: customer.id,
-            documentNumber,
-          },
+          rutNormalized: normalizedRut,
         },
         update: {
-          zohoDocumentId: invoice.invoiceId,
-          documentType: DocumentType.INVOICE,
-          issueDate: invoice.date ? new Date(invoice.date) : null,
-          dueDate: invoice.dueDate ? new Date(invoice.dueDate) : new Date(),
-          totalAmount: Math.round(invoice.total),
-          outstandingAmount: Math.round(invoice.balance),
-          currency: invoice.currency,
-          status: this.mapZohoInvoiceStatus(invoice.status),
+          rut: zohoDebt.contact?.contactNumber ?? normalizedRut,
+          businessName,
+          zohoCustomerId: zohoDebt.contact?.contactId,
+          status: CustomerStatus.ACTIVE,
         },
         create: {
-          customerId: customer.id,
-          zohoDocumentId: invoice.invoiceId,
-          documentType: DocumentType.INVOICE,
-          documentNumber,
-          issueDate: invoice.date ? new Date(invoice.date) : null,
-          dueDate: invoice.dueDate ? new Date(invoice.dueDate) : new Date(),
-          totalAmount: Math.round(invoice.total),
-          outstandingAmount: Math.round(invoice.balance),
-          currency: invoice.currency,
-          status: this.mapZohoInvoiceStatus(invoice.status),
+          rut: zohoDebt.contact?.contactNumber ?? normalizedRut,
+          rutNormalized: normalizedRut,
+          businessName,
+          zohoCustomerId: zohoDebt.contact?.contactId,
+          status: CustomerStatus.ACTIVE,
         },
       });
-    }
+
+      /*
+       * Primero sincronizamos todas las facturas que Zoho dice que
+       * actualmente están pendientes.
+       */
+      for (const invoice of zohoDebt.invoices) {
+        const documentNumber =
+          invoice.invoiceNumber ?? invoice.invoiceId ?? `ZOHO-${Date.now()}`;
+
+        await tx.customerDocument.upsert({
+          where: {
+            customerId_documentNumber: {
+              customerId: customer.id,
+              documentNumber,
+            },
+          },
+          update: {
+            zohoDocumentId: invoice.invoiceId,
+            documentType: DocumentType.INVOICE,
+            issueDate: invoice.date ? new Date(invoice.date) : null,
+            dueDate: invoice.dueDate ? new Date(invoice.dueDate) : new Date(),
+            totalAmount: Math.round(invoice.total),
+            outstandingAmount: Math.round(invoice.balance),
+            currency: invoice.currency,
+            status: this.mapZohoInvoiceStatus(invoice.status),
+          },
+          create: {
+            customerId: customer.id,
+            zohoDocumentId: invoice.invoiceId,
+            documentType: DocumentType.INVOICE,
+            documentNumber,
+            issueDate: invoice.date ? new Date(invoice.date) : null,
+            dueDate: invoice.dueDate ? new Date(invoice.dueDate) : new Date(),
+            totalAmount: Math.round(invoice.total),
+            outstandingAmount: Math.round(invoice.balance),
+            currency: invoice.currency,
+            status: this.mapZohoInvoiceStatus(invoice.status),
+          },
+        });
+      }
+
+      /*
+       * Ahora buscamos documentos que MariaDB todavía considera pagables.
+       */
+      const cachedPayableDocuments = await tx.customerDocument.findMany({
+        where: {
+          customerId: customer.id,
+          status: {
+            in: PAYABLE_DOCUMENT_STATUSES,
+          },
+          outstandingAmount: {
+            gt: 0,
+          },
+        },
+        select: {
+          id: true,
+          zohoDocumentId: true,
+          documentNumber: true,
+        },
+      });
+
+      /*
+       * Si un documento local antes era pagable, pero ya NO aparece
+       * entre las facturas impagas actuales de Zoho, deja de ser pagable
+       * en nuestro caché local.
+       */
+      const staleDocumentIds = cachedPayableDocuments
+        .filter((document) => {
+          if (
+            document.zohoDocumentId &&
+            currentZohoDocumentIds.has(document.zohoDocumentId)
+          ) {
+            return false;
+          }
+
+          if (currentDocumentNumbers.has(document.documentNumber)) {
+            return false;
+          }
+
+          return true;
+        })
+        .map((document) => document.id);
+
+      if (staleDocumentIds.length > 0) {
+        await tx.customerDocument.updateMany({
+          where: {
+            id: {
+              in: staleDocumentIds,
+            },
+          },
+          data: {
+            outstandingAmount: 0,
+            status: DocumentStatus.PAID,
+          },
+        });
+      }
+
+      return {
+        customerId: customer.id,
+        staleDocumentsClosed: staleDocumentIds.length,
+      };
+    });
 
     return {
-      customerId: customer.id,
-      totalDebt: zohoDebt.totalDebt,
+      customerId: result.customerId,
+      totalDebt: Math.round(zohoDebt.totalDebt),
       currency: zohoDebt.currency,
+      staleDocumentsClosed: result.staleDocumentsClosed,
     };
   }
 

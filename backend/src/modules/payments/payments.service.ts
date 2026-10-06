@@ -33,7 +33,10 @@ export class PaymentsService {
     private readonly zohoCustomerPaymentsService: ZohoCustomerPaymentsService,
   ) {}
 
-  async createPayment(createPaymentDto: CreatePaymentDto) {
+  async createPayment(
+    createPaymentDto: CreatePaymentDto,
+    options?: { expectedAmount?: number },
+  ) {
     const customer = await this.prisma.customer.findUnique({
       where: {
         id: createPaymentDto.customerId,
@@ -61,6 +64,18 @@ export class PaymentsService {
       (sum, document) => sum + document.outstandingAmount,
       0,
     );
+
+    if (
+      options?.expectedAmount !== undefined &&
+      amount !== options.expectedAmount
+    ) {
+      throw new BadRequestException(
+        `La deuda cambió durante la generación del pago. ` +
+          `Zoho informa ${options.expectedAmount} CLP, ` +
+          `pero la deuda local sincronizada suma ${amount} CLP. ` +
+          `Vuelve a consultar la deuda antes de pagar.`,
+      );
+    }
 
     if (amount <= 0) {
       throw new BadRequestException('El monto del pago debe ser mayor a cero.');
@@ -505,6 +520,285 @@ export class PaymentsService {
       alreadyProcessed: false,
       payment: this.mapPaymentResponse(updatedPayment),
       zohoSync,
+    };
+  }
+
+  async refreshPaymentStatusFromKhipu(paymentId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: {
+        id: paymentId,
+      },
+      include: {
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    if (!payment.khipuPaymentId) {
+      return {
+        refreshed: false,
+        message: 'El pago no tiene un identificador de Khipu.',
+        payment: this.mapPaymentResponse(payment),
+      };
+    }
+
+    /*
+     * Un PAID ya confirmado no necesita consultar Khipu otra vez.
+     */
+    if (payment.status === PaymentStatus.PAID) {
+      return {
+        refreshed: false,
+        message: 'El pago ya se encuentra confirmado.',
+        payment: this.mapPaymentResponse(payment),
+      };
+    }
+
+    const khipuResult = await this.khipuService.getPaymentById(
+      payment.khipuPaymentId,
+    );
+
+    const khipuPayment = khipuResult.response;
+
+    /*
+     * Seguridad adicional:
+     * transaction_id debe ser nuestro ID local.
+     */
+    if (
+      khipuPayment.transaction_id &&
+      khipuPayment.transaction_id !== payment.id
+    ) {
+      throw new BadRequestException(
+        'El pago consultado en Khipu no corresponde al pago local.',
+      );
+    }
+
+    const khipuAmount = Math.round(Number(khipuPayment.amount));
+
+    if (!Number.isFinite(khipuAmount) || khipuAmount !== payment.amount) {
+      throw new BadRequestException(
+        'El monto informado por Khipu no coincide con el pago local.',
+      );
+    }
+
+    if (khipuPayment.currency !== payment.currency) {
+      throw new BadRequestException(
+        'La moneda informada por Khipu no coincide con el pago local.',
+      );
+    }
+
+    /*
+     * DONE
+     *
+     * Preferimos que normalmente sea el webhook quien confirme el pago,
+     * pero este fallback permite recuperarnos si el webhook tardó o falló.
+     */
+    if (khipuPayment.status === 'done') {
+      const result = await this.markPaymentAsPaidFromKhipuWebhook({
+        localPaymentId: payment.id,
+        khipuPaymentId: payment.khipuPaymentId,
+        amount: khipuAmount,
+        currency: khipuPayment.currency,
+        payload: khipuPayment,
+      });
+
+      return {
+        refreshed: true,
+        khipuStatus: 'done',
+        ...result,
+      };
+    }
+
+    /*
+     * VERIFYING
+     */
+    if (khipuPayment.status === 'verifying') {
+      const updatedPayment = await this.prisma.payment.update({
+        where: {
+          id: payment.id,
+        },
+        data: {
+          status: PaymentStatus.IN_PROGRESS,
+        },
+        include: {
+          documents: {
+            include: {
+              document: true,
+            },
+          },
+        },
+      });
+
+      return {
+        refreshed: true,
+        khipuStatus: 'verifying',
+        message: 'Khipu está verificando el pago.',
+        payment: this.mapPaymentResponse(updatedPayment),
+      };
+    }
+
+    /*
+     * PENDING
+     */
+    const expiresAt = khipuPayment.expires_date
+      ? new Date(khipuPayment.expires_date)
+      : payment.expiresAt;
+
+    const hasExpired =
+      expiresAt instanceof Date &&
+      !Number.isNaN(expiresAt.getTime()) &&
+      expiresAt.getTime() < Date.now();
+
+    const nextStatus = hasExpired
+      ? PaymentStatus.EXPIRED
+      : PaymentStatus.PENDING;
+
+    const updatedPayment = await this.prisma.payment.update({
+      where: {
+        id: payment.id,
+      },
+      data: {
+        status: nextStatus,
+        expiresAt,
+      },
+      include: {
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+
+    return {
+      refreshed: true,
+      khipuStatus: 'pending',
+      expired: hasExpired,
+      message: hasExpired
+        ? 'El cobro de Khipu expiró.'
+        : 'El pago continúa pendiente.',
+      payment: this.mapPaymentResponse(updatedPayment),
+    };
+  }
+
+  async cancelKhipuPayment(paymentId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: {
+        id: paymentId,
+      },
+      include: {
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+
+    if (!payment) {
+      throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    if (payment.status === PaymentStatus.PAID) {
+      throw new BadRequestException(
+        'No se puede cancelar un pago que ya fue confirmado.',
+      );
+    }
+
+    if (payment.status === PaymentStatus.CANCELLED) {
+      return {
+        cancelled: true,
+        alreadyCancelled: true,
+        payment: this.mapPaymentResponse(payment),
+      };
+    }
+
+    if (!payment.khipuPaymentId) {
+      throw new BadRequestException(
+        'El pago no tiene un cobro de Khipu asociado.',
+      );
+    }
+
+    /*
+     * Antes de borrar preguntamos a Khipu cuál es el estado REAL.
+     */
+    const khipuResult = await this.khipuService.getPaymentById(
+      payment.khipuPaymentId,
+    );
+
+    const khipuPayment = khipuResult.response;
+
+    if (khipuPayment.status === 'done') {
+      /*
+       * Nunca cancelar algo que Khipu dice que ya fue pagado.
+       */
+      return this.refreshPaymentStatusFromKhipu(payment.id);
+    }
+
+    if (khipuPayment.status === 'verifying') {
+      await this.prisma.payment.update({
+        where: {
+          id: payment.id,
+        },
+        data: {
+          status: PaymentStatus.IN_PROGRESS,
+        },
+      });
+
+      throw new BadRequestException(
+        'El pago está siendo verificado por Khipu y ya no puede cancelarse en este momento.',
+      );
+    }
+
+    /*
+     * Solo llegamos aquí si Khipu dice PENDING.
+     */
+    await this.khipuService.deletePayment(payment.khipuPaymentId);
+
+    const now = new Date();
+
+    const cancelledPayment = await this.prisma.payment.update({
+      where: {
+        id: payment.id,
+      },
+      data: {
+        status: PaymentStatus.CANCELLED,
+        events: {
+          create: {
+            eventSource: EventSource.KHIPU,
+            eventType: 'payment.cancelled',
+            externalEventId: `khipu-cancelled-${payment.khipuPaymentId}`,
+            payload: {
+              provider: 'KHIPU_REAL',
+              paymentId: payment.id,
+              khipuPaymentId: payment.khipuPaymentId,
+              cancelledAt: now.toISOString(),
+            },
+            processed: true,
+            processedAt: now,
+          },
+        },
+      },
+      include: {
+        documents: {
+          include: {
+            document: true,
+          },
+        },
+      },
+    });
+
+    return {
+      cancelled: true,
+      alreadyCancelled: false,
+      message: 'Cobro de Khipu cancelado correctamente.',
+      payment: this.mapPaymentResponse(cancelledPayment),
     };
   }
 

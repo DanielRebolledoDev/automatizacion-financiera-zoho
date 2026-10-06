@@ -5,6 +5,7 @@ import type {
   CreateKhipuPaymentParams,
   KhipuCreatePaymentApiResponse,
   KhipuPaymentResponse,
+  KhipuPaymentStatusApiResponse,
 } from './interfaces/khipu-payment.interface';
 
 @Injectable()
@@ -127,7 +128,9 @@ export class KhipuService {
       },
     );
 
-    const data = (await response.json().catch(() => null)) as unknown;
+    const data = (await response
+      .json()
+      .catch(() => null)) as KhipuPaymentStatusApiResponse | null;
 
     if (!response.ok) {
       throw new ServiceUnavailableException({
@@ -137,9 +140,45 @@ export class KhipuService {
       });
     }
 
+    if (!data?.payment_id || !data.status) {
+      throw new ServiceUnavailableException(
+        'Khipu respondió con un estado de pago inválido.',
+      );
+    }
+
     return {
       ok: true,
       paymentId: khipuPaymentId,
+      response: data,
+    };
+  }
+
+  async deletePayment(khipuPaymentId: string) {
+    const baseUrl = this.getRequiredConfig('KHIPU_BASE_URL').replace(/\/$/, '');
+
+    const response = await fetch(
+      `${baseUrl}/payments/${encodeURIComponent(khipuPaymentId)}`,
+      {
+        method: 'DELETE',
+        headers: {
+          Accept: 'application/json',
+          ...this.getKhipuAuthHeaders(),
+        },
+      },
+    );
+
+    const data = (await response.json().catch(() => null)) as unknown;
+
+    if (!response.ok) {
+      throw new ServiceUnavailableException({
+        message: 'Khipu no permitió eliminar el cobro.',
+        status: response.status,
+        response: data,
+      });
+    }
+
+    return {
+      ok: true,
       response: data,
     };
   }

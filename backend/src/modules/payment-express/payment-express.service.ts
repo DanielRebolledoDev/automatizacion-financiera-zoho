@@ -48,19 +48,40 @@ export class PaymentExpressService {
       paymentExpressRutDto.rut,
     );
 
-    const customerReference =
-      await this.customerDataProvider.getCustomerReferenceByRut(normalizedRut);
+    /*
+     * Volvemos a consultar Zoho justo antes de generar el pago.
+     *
+     * Así evitamos usar una deuda que el usuario vio hace varios minutos
+     * y que pudo haber cambiado mientras tanto.
+     */
+    const summary =
+      await this.customerDataProvider.getPaymentExpressSummaryByRut(
+        normalizedRut,
+      );
 
-    if (!customerReference) {
+    if (!summary) {
       throw new NotFoundException(
         'No se encontró deuda asociada al RUT ingresado.',
       );
     }
 
-    const paymentResult = await this.paymentsService.createPayment({
-      customerId: customerReference.customerId,
-      mode: PaymentMode.TOTAL_DEBT,
-    });
+    if (!summary.canPay || summary.totalDebt <= 0) {
+      throw new BadRequestException(
+        'El cliente no posee deuda pendiente para pagar.',
+      );
+    }
+
+    const expectedAmount = Math.round(summary.totalDebt);
+
+    const paymentResult = await this.paymentsService.createPayment(
+      {
+        customerId: summary.customerId,
+        mode: PaymentMode.TOTAL_DEBT,
+      },
+      {
+        expectedAmount,
+      },
+    );
 
     return {
       message: paymentResult.reused
