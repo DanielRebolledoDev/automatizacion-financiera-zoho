@@ -22,6 +22,20 @@ export const paymentExpressApi = {
 
   getPaymentResult: (paymentId: string) =>
     httpClient.get<PaymentExpressResultResponse>(
-      `/payment-express/result/${paymentId}`,
+      `/payment-express/result/${encodeURIComponent(paymentId)}`,
+    ),
+
+  // Estos endpoints tienen otro formato de respuesta. Después de ejecutarlos
+  // volvemos a obtener el resultado desde el endpoint de Pago Express.
+  refreshPaymentStatus: (paymentId: string) =>
+    httpClient.post<unknown, Record<string, never>>(
+      `/payments/${encodeURIComponent(paymentId)}/refresh-khipu-status`,
+      {},
+    ),
+
+  cancelPayment: (paymentId: string) =>
+    httpClient.post<unknown, Record<string, never>>(
+      `/payments/${encodeURIComponent(paymentId)}/cancel`,
+      {},
     ),
 };

@@ -26,15 +26,20 @@ export function MockKhipuCheckoutPage() {
   const paidMutation = useMockKhipuPaid();
 
   const handleMockPaid = async () => {
-    if (!paymentId) return;
-
-    await paidMutation.mutateAsync(paymentId);
-
-    navigate(`/pago-express/resultado/${paymentId}`);
+    if (!paymentId || paidMutation.isPending) return;
+    try {
+      await paidMutation.mutateAsync(paymentId);
+      navigate(`/pago-express/resultado/${paymentId}`, { replace: true });
+    } catch {
+      // La mutación expone el error en el Alert de esta pantalla.
+    }
   };
 
   const handleCancel = () => {
-    navigate("/pago-express");
+    if (!paymentId || paidMutation.isPending) return;
+    navigate(`/pago-express/resultado/${paymentId}?cancelled=1`, {
+      replace: true,
+    });
   };
 
   return (
@@ -55,17 +60,14 @@ export function MockKhipuCheckoutPage() {
               color="secondary"
               variant="outlined"
             />
-
             <Typography variant="h4" component="h1">
               Khipu Mock
             </Typography>
-
             <Typography variant="body1" color="text.secondary">
               Esta pantalla simula el checkout de Khipu para probar el flujo de
               pago completo.
             </Typography>
           </Stack>
-
           <Card>
             <CardContent>
               <Stack spacing={3}>
@@ -74,27 +76,30 @@ export function MockKhipuCheckoutPage() {
                   sx={{ alignItems: "center", textAlign: "center" }}
                 >
                   <AccountBalance color="secondary" sx={{ fontSize: 56 }} />
-
                   <Typography variant="h5" component="h2">
                     Simulación de pago bancario
                   </Typography>
-
-                  <Typography variant="body2" color="text.secondary">
+                  <Typography
+                    variant="body2"
+                    color="text.secondary"
+                    sx={{ overflowWrap: "anywhere" }}
+                  >
                     ID de pago: {paymentId}
                   </Typography>
                 </Stack>
-
                 <Alert severity="info">
                   En producción, esta pantalla será reemplazada por la URL real
                   entregada por Khipu.
                 </Alert>
-
+                {!paymentId && (
+                  <Alert severity="error">
+                    No se encontró el identificador del pago.
+                  </Alert>
+                )}
                 {paidMutation.isError && (
                   <Alert severity="error">{paidMutation.error.message}</Alert>
                 )}
-
                 <Divider />
-
                 <Stack spacing={2}>
                   <Button
                     variant="contained"
@@ -114,15 +119,14 @@ export function MockKhipuCheckoutPage() {
                       ? "Procesando pago..."
                       : "Simular pago exitoso"}
                   </Button>
-
                   <Button
                     variant="outlined"
                     size="large"
                     startIcon={<ArrowBack />}
                     onClick={handleCancel}
-                    disabled={paidMutation.isPending}
+                    disabled={!paymentId || paidMutation.isPending}
                   >
-                    Cancelar y volver
+                    Cancelar cobro
                   </Button>
                 </Stack>
               </Stack>
