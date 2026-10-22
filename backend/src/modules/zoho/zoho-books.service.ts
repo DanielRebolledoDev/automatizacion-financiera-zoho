@@ -164,6 +164,8 @@ export class ZohoBooksService {
 
     const response = await fetch(url, {
       method: 'POST',
+      // Un timeout no prueba que Zoho no haya creado el recurso. No reintentar aquí.
+      signal: AbortSignal.timeout(15_000),
       headers: {
         Authorization: `Zoho-oauthtoken ${accessToken}`,
         Accept: 'application/json',

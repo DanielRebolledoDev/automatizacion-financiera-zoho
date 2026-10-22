@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -240,6 +241,16 @@ export class PaymentsService {
   }
 
   async markPaymentAsPaidFromMock(paymentId: string) {
+    const provider =
+      this.configService.get<string>('KHIPU_PROVIDER')?.trim() ?? 'mock';
+    const environment = this.configService.get<string>('NODE_ENV')?.trim();
+
+    if (provider !== 'mock' || environment === 'production') {
+      throw new ForbiddenException(
+        'La confirmación Mock solo está disponible en modo mock fuera de producción.',
+      );
+    }
+
     const payment = await this.prisma.payment.findUnique({
       where: {
         id: paymentId,
@@ -262,6 +273,12 @@ export class PaymentsService {
 
     if (!payment) {
       throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    if (!payment.khipuPaymentId?.startsWith('mock_')) {
+      throw new ForbiddenException(
+        'La confirmación Mock no puede aplicarse a un cobro real o sin proveedor.',
+      );
     }
 
     if (payment.status === PaymentStatus.PAID) {

@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE `payments` ADD COLUMN `zohoSyncAttemptId` CHAR(36) NULL,
+    ADD COLUMN `zohoSyncPayload` JSON NULL,
+    ADD COLUMN `zohoSyncRemotePaymentId` VARCHAR(100) NULL,
+    ADD COLUMN `zohoSyncStartedAt` DATETIME(3) NULL,
+    MODIFY `zohoSyncStatus` ENUM('NOT_SYNCED', 'DRY_RUN_READY', 'SYNCED', 'FAILED', 'SENDING', 'REVIEW_REQUIRED') NOT NULL DEFAULT 'NOT_SYNCED';
