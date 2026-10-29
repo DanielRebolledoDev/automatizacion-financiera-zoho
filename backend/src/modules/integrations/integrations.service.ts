@@ -199,6 +199,18 @@ export class IntegrationsService {
     };
   }
 
+  async reconcileZohoCustomerPayment(paymentId: string) {
+    this.assertDevelopmentOnly();
+    const result =
+      await this.zohoCustomerPaymentsService.reconcileCustomerPayment(
+        paymentId,
+      );
+    return {
+      message: 'Consulta de conciliación de Zoho completada.',
+      data: result,
+    };
+  }
+
   private assertDevelopmentOnly() {
     const nodeEnv = this.configService.get<string>('NODE_ENV');
 

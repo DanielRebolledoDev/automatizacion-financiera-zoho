@@ -1,15 +1,18 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { parseZohoListPage } from './utils/zoho-pagination.util';
 import { normalizeRut } from '../../common/utils/rut.util';
 import { ZohoAuthService } from './zoho-auth.service';
 import type {
   ZohoContact,
   ZohoContactResponse,
 } from './interfaces/zoho-contact.interface';
-import type {
-  ZohoInvoice,
-  ZohoInvoicesResponse,
-} from './interfaces/zoho-invoice.interface';
+import type { ZohoInvoice } from './interfaces/zoho-invoice.interface';
 
 import type {
   MatchedZohoInvoice,
@@ -20,17 +23,15 @@ type ZohoQueryParams = Record<string, string | number | boolean | undefined>;
 
 interface ZohoRequestOptions {
   includeOrganizationId?: boolean;
+  expectedOrganizationId?: string;
+  signal?: AbortSignal;
 }
 
-interface ZohoContactsResponse {
-  code?: number;
-  message?: string;
-  contacts?: ZohoContact[];
-  page_context?: {
-    page?: number;
-    per_page?: number;
-    has_more_page?: boolean;
-  };
+interface ZohoReadContext {
+  organizationId: string;
+  deadlineAtMs: number;
+  signal: AbortSignal;
+  remainingRequests: number;
 }
 
 export interface ZohoMappedInvoice {
@@ -95,7 +96,12 @@ export class ZohoBooksService {
     queryParams: ZohoQueryParams = {},
     options: ZohoRequestOptions = { includeOrganizationId: true },
   ): Promise<TResponse> {
+    this.assertNoOrganizationOverride(queryParams);
+    this.assertReadSignal(options.signal);
     const accessToken = await this.zohoAuthService.getAccessToken();
+    // OAuth puede estar compartido con otra consulta. Si esta ya venció,
+    // no iniciar una solicitud de negocio cuando termine el refresco.
+    this.assertReadSignal(options.signal);
 
     const booksBaseUrl = this.getRequiredConfig('ZOHO_BOOKS_BASE_URL').replace(
       /\/$/,
@@ -105,8 +111,18 @@ export class ZohoBooksService {
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     const url = new URL(`${booksBaseUrl}${normalizedPath}`);
 
+    if (
+      options.includeOrganizationId === false &&
+      options.expectedOrganizationId
+    ) {
+      throw new BadRequestException(
+        'La consulta requiere incluir la organización esperada.',
+      );
+    }
     if (options.includeOrganizationId !== false) {
-      const organizationId = this.getRequiredConfig('ZOHO_ORGANIZATION_ID');
+      const organizationId = this.checkedOrganizationId(
+        options.expectedOrganizationId,
+      );
       url.searchParams.set('organization_id', organizationId);
     }
 
@@ -116,15 +132,30 @@ export class ZohoBooksService {
       }
     });
 
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        Authorization: `Zoho-oauthtoken ${accessToken}`,
-        Accept: 'application/json',
-      },
-    });
+    let response: Response;
+    try {
+      const requestTimeout = AbortSignal.timeout(15_000);
+      response = await fetch(url, {
+        method: 'GET',
+        signal: options.signal
+          ? AbortSignal.any([requestTimeout, options.signal])
+          : requestTimeout,
+        headers: {
+          Authorization: `Zoho-oauthtoken ${accessToken}`,
+          Accept: 'application/json',
+        },
+      });
+    } catch {
+      this.assertReadSignal(options.signal);
+      throw new ServiceUnavailableException({
+        code: 'ZOHO_READ_FAILED',
+        message:
+          'No se pudo completar la lectura de Zoho dentro del tiempo permitido. Vuelve a consultar.',
+      });
+    }
 
     const data = (await response.json().catch(() => null)) as unknown;
+    this.assertReadSignal(options.signal);
 
     if (!response.ok) {
       throw new ServiceUnavailableException({
@@ -141,7 +172,9 @@ export class ZohoBooksService {
     path: string,
     body: unknown,
     queryParams: ZohoQueryParams = {},
+    expectedOrganizationId?: string,
   ): Promise<TResponse> {
+    this.assertNoOrganizationOverride(queryParams);
     const accessToken = await this.zohoAuthService.getAccessToken();
 
     const booksBaseUrl = this.getRequiredConfig('ZOHO_BOOKS_BASE_URL').replace(
@@ -149,7 +182,7 @@ export class ZohoBooksService {
       '',
     );
 
-    const organizationId = this.getRequiredConfig('ZOHO_ORGANIZATION_ID');
+    const organizationId = this.checkedOrganizationId(expectedOrganizationId);
 
     const normalizedPath = path.startsWith('/') ? path : `/${path}`;
     const url = new URL(`${booksBaseUrl}${normalizedPath}`);
@@ -187,6 +220,28 @@ export class ZohoBooksService {
     return data as TResponse;
   }
 
+  getOrganizationId(): string {
+    return this.getRequiredConfig('ZOHO_ORGANIZATION_ID');
+  }
+
+  private checkedOrganizationId(expected?: string): string {
+    const configured = this.getOrganizationId();
+    if (expected !== undefined && expected !== configured) {
+      throw new ConflictException(
+        'La organización de Zoho cambió. No se realizará la solicitud.',
+      );
+    }
+    return configured;
+  }
+
+  private assertNoOrganizationOverride(params: ZohoQueryParams): void {
+    if (Object.prototype.hasOwnProperty.call(params, 'organization_id')) {
+      throw new BadRequestException(
+        'La organización no se puede sobrescribir mediante parámetros.',
+      );
+    }
+  }
+
   async listOrganizations() {
     return this.getFromBooks(
       '/organizations',
@@ -215,41 +270,19 @@ export class ZohoBooksService {
   }
 
   async listUnpaidInvoices(
-    params: {
-      startDate?: string;
-      perPage?: number;
-      maxPages?: number;
-    } = {},
+    params: { startDate?: string; perPage?: number; maxPages?: number } = {},
   ): Promise<ZohoInvoice[]> {
-    const allInvoices: ZohoInvoice[] = [];
-    const perPage = params.perPage ?? 200;
-    const maxPages = params.maxPages ?? 20;
-
-    let page = 1;
-    let hasMore = true;
-
-    while (hasMore && page <= maxPages) {
-      const response = await this.getFromBooks<ZohoInvoicesResponse>(
-        '/invoices',
-        {
-          status: 'unpaid',
-          sort_column: 'customer_name',
-          page,
-          per_page: perPage,
-          date_after: params.startDate,
-        },
-      );
-
-      allInvoices.push(...(response.invoices ?? []));
-
-      hasMore =
-        response.page_context?.has_more_page ??
-        response.invoices?.length === perPage;
-
-      page += 1;
-    }
-
-    return allInvoices;
+    return this.collectZohoPages<ZohoInvoice>(
+      '/invoices',
+      'invoices',
+      {
+        status: 'unpaid',
+        sort_column: 'customer_name',
+        date_after: params.startDate,
+      },
+      params.perPage ?? 200,
+      params.maxPages ?? 20,
+    );
   }
 
   async listUnpaidInvoicesForDebug(
@@ -258,14 +291,24 @@ export class ZohoBooksService {
       perPage?: number;
     } = {},
   ) {
-    const invoices = await this.listUnpaidInvoices({
-      startDate: params.startDate,
-      perPage: params.perPage ?? 10,
-      maxPages: 1,
+    const response = await this.getFromBooks<unknown>('/invoices', {
+      status: 'unpaid',
+      sort_column: 'customer_name',
+      date_after: params.startDate,
+      page: 1,
+      per_page: params.perPage ?? 10,
     });
-
+    const sample = parseZohoListPage(
+      response,
+      'invoices',
+      1,
+      new Set<string>(),
+    );
+    const invoices = sample.items as ZohoInvoice[];
+    // Esta ruta es una muestra administrativa, nunca una deuda completa.
     return {
       count: invoices.length,
+      isPartial: sample.hasMore,
       invoices: invoices.map((invoice) => ({
         invoiceId: invoice.invoice_id ?? null,
         invoiceNumber: invoice.invoice_number ?? null,
@@ -355,41 +398,33 @@ export class ZohoBooksService {
   }
 
   async findContactsByRut(normalizedRut: string): Promise<ZohoContact[]> {
-    const allContacts: ZohoContact[] = [];
-    const perPage = 200;
-    const maxPages = 5;
+    return this.withZohoReadContext((context) =>
+      this.readContactsByRut(normalizedRut, context),
+    );
+  }
 
-    let page = 1;
-    let hasMore = true;
-
-    while (hasMore && page <= maxPages) {
-      const response = await this.getFromBooks<ZohoContactsResponse>(
-        '/contacts',
-        {
-          search_text: normalizedRut,
-          contact_type: 'customer',
-          page,
-          per_page: perPage,
-        },
-      );
-
-      const contacts = response.contacts ?? [];
-
-      allContacts.push(...contacts);
-
-      hasMore =
-        response.page_context?.has_more_page ?? contacts.length === perPage;
-
-      page += 1;
-    }
-
-    return allContacts.filter((contact) => {
-      if (typeof contact.contact_number !== 'string') {
-        return false;
-      }
-
-      return normalizeRut(contact.contact_number) === normalizedRut;
-    });
+  private async readContactsByRut(
+    rut: string,
+    context: ZohoReadContext,
+  ): Promise<ZohoContact[]> {
+    const normalizedRut = normalizeRut(rut);
+    // search_text busca nombre/notas; no garantiza buscar contact_number.
+    // La identidad se resuelve con el catálogo completo, nunca con el primer match.
+    const contacts = await this.collectZohoPages<ZohoContact>(
+      '/contacts',
+      'contacts',
+      { contact_type: 'customer', sort_column: 'created_time' },
+      200,
+      this.readLimit('ZOHO_CONTACTS_MAX_PAGES', 50, 100),
+      context,
+    );
+    return contacts.filter(
+      (contact) =>
+        (contact.contact_type === undefined ||
+          contact.contact_type === 'customer') &&
+        typeof contact.contact_number === 'string' &&
+        normalizeRut(contact.contact_number) === normalizedRut,
+    );
   }
 
   async findContactByRut(normalizedRut: string): Promise<ZohoContact | null> {
@@ -400,70 +435,186 @@ export class ZohoBooksService {
 
   async listUnpaidInvoicesByContactId(
     contactId: string,
-    maxPages = 5,
+    maxPages?: number,
   ): Promise<ZohoInvoice[]> {
-    const allInvoices: ZohoInvoice[] = [];
-    const perPage = 200;
+    return this.withZohoReadContext((context) =>
+      this.readUnpaidInvoicesByContactId(
+        contactId,
+        maxPages ?? this.readLimit('ZOHO_INVOICES_MAX_PAGES', 20, 100),
+        context,
+      ),
+    );
+  }
 
-    let page = 1;
-    let hasMore = true;
-
-    while (hasMore && page <= maxPages) {
-      const response = await this.getFromBooks<ZohoInvoicesResponse>(
-        '/invoices',
-        {
-          customer_id: contactId,
-          status: 'unpaid',
-          sort_column: 'due_date',
-          page,
-          per_page: perPage,
-        },
+  private async readUnpaidInvoicesByContactId(
+    contactId: string,
+    maxPages: number,
+    context: ZohoReadContext,
+  ): Promise<ZohoInvoice[]> {
+    const invoices = await this.collectZohoPages<ZohoInvoice>(
+      '/invoices',
+      'invoices',
+      { customer_id: contactId, status: 'unpaid', sort_column: 'due_date' },
+      200,
+      maxPages,
+      context,
+    );
+    if (invoices.some((invoice) => invoice.customer_id !== contactId)) {
+      throw new ServiceUnavailableException(
+        'Zoho devolvió facturas sin cliente coincidente. No se actualizará la deuda.',
       );
-
-      const invoices = response.invoices ?? [];
-
-      allInvoices.push(...invoices);
-
-      hasMore =
-        response.page_context?.has_more_page ?? invoices.length === perPage;
-
-      page += 1;
     }
-
-    return allInvoices;
+    return invoices;
   }
 
   async listInvoicesByContactIdForDebug(
     contactId: string,
   ): Promise<ZohoInvoice[]> {
-    const allInvoices: ZohoInvoice[] = [];
-    const perPage = 200;
+    return this.collectZohoPages<ZohoInvoice>(
+      '/invoices',
+      'invoices',
+      { customer_id: contactId, sort_column: 'due_date' },
+      200,
+      20,
+    );
+  }
 
-    let page = 1;
-    let hasMore = true;
-
-    while (hasMore) {
-      const response = await this.getFromBooks<ZohoInvoicesResponse>(
-        '/invoices',
+  private async collectZohoPages<T>(
+    path: string,
+    collection: 'invoices' | 'contacts',
+    params: ZohoQueryParams,
+    perPage: number,
+    maxPages: number,
+    context?: ZohoReadContext,
+  ): Promise<T[]> {
+    if (
+      !Number.isInteger(perPage) ||
+      perPage < 1 ||
+      perPage > 200 ||
+      !Number.isInteger(maxPages) ||
+      maxPages < 1 ||
+      maxPages > 100
+    ) {
+      throw new BadRequestException('Límites de paginación inválidos.');
+    }
+    if (!context) {
+      return this.withZohoReadContext((readContext) =>
+        this.collectZohoPages<T>(
+          path,
+          collection,
+          params,
+          perPage,
+          maxPages,
+          readContext,
+        ),
+      );
+    }
+    const seenIds = new Set<string>();
+    const records: Record<string, unknown>[] = [];
+    for (let page = 1; page <= maxPages; page += 1) {
+      this.assertReadContext(context);
+      if (context.remainingRequests <= 0) {
+        throw this.incompleteRead('REQUEST_LIMIT_REACHED', collection);
+      }
+      context.remainingRequests -= 1;
+      const response = await this.getFromBooks<unknown>(
+        path,
+        { ...params, page, per_page: perPage },
         {
-          customer_id: contactId,
-          sort_column: 'due_date',
-          page,
-          per_page: perPage,
+          expectedOrganizationId: context.organizationId,
+          signal: context.signal,
         },
       );
-
-      const invoices = response.invoices ?? [];
-
-      allInvoices.push(...invoices);
-
-      hasMore =
-        response.page_context?.has_more_page ?? invoices.length === perPage;
-
-      page += 1;
+      this.assertReadContext(context);
+      const parsed = parseZohoListPage(response, collection, page, seenIds);
+      records.push(...parsed.items);
+      if (!parsed.hasMore) return records as T[];
     }
+    // Nunca entregar un subconjunto como si fuera la deuda completa.
+    throw this.incompleteRead('PAGE_LIMIT_REACHED', collection, maxPages);
+  }
 
-    return allInvoices;
+  private readLimit(key: string, fallback: number, maximum: number): number {
+    const raw = this.configService.get<unknown>(key);
+    if (raw === undefined || raw === null || raw === '') return fallback;
+    const value =
+      typeof raw === 'number'
+        ? raw
+        : typeof raw === 'string' && /^\d+$/.test(raw.trim())
+          ? Number(raw.trim())
+          : NaN;
+    if (!Number.isInteger(value) || value < 1 || value > maximum) {
+      throw new ServiceUnavailableException({
+        code: 'ZOHO_READ_CONFIG_INVALID',
+        setting: key,
+        message: `La configuración ${key} debe ser un entero entre 1 y ${maximum}.`,
+      });
+    }
+    return value;
+  }
+
+  private incompleteRead(
+    reason:
+      | 'PAGE_LIMIT_REACHED'
+      | 'TIME_LIMIT_REACHED'
+      | 'REQUEST_LIMIT_REACHED',
+    collection?: 'contacts' | 'invoices',
+    maxPages?: number,
+  ): ServiceUnavailableException {
+    return new ServiceUnavailableException({
+      code: 'ZOHO_READ_INCOMPLETE',
+      reason,
+      collection,
+      maxPages,
+      message:
+        'La consulta de deuda de Zoho quedó incompleta. No se actualizarán saldos ni se generará un pago con esta lectura.',
+    });
+  }
+
+  private assertReadSignal(signal?: AbortSignal): void {
+    if (signal?.aborted) throw this.incompleteRead('TIME_LIMIT_REACHED');
+  }
+
+  private assertReadContext(context: ZohoReadContext): void {
+    this.assertReadSignal(context.signal);
+    if (Date.now() >= context.deadlineAtMs) {
+      throw this.incompleteRead('TIME_LIMIT_REACHED');
+    }
+    this.checkedOrganizationId(context.organizationId);
+  }
+
+  private async withZohoReadContext<T>(
+    operation: (context: ZohoReadContext) => Promise<T>,
+  ): Promise<T> {
+    const timeoutMs = this.readLimit(
+      'ZOHO_DEBT_READ_TIMEOUT_MS',
+      60_000,
+      120_000,
+    );
+    const controller = new AbortController();
+    const context: ZohoReadContext = {
+      organizationId: this.getOrganizationId(),
+      deadlineAtMs: Date.now() + timeoutMs,
+      signal: controller.signal,
+      remainingRequests: 100,
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        const error = this.incompleteRead('TIME_LIMIT_REACHED');
+        controller.abort();
+        reject(error);
+      }, timeoutMs);
+    });
+    try {
+      // La carrera también limita una espera de OAuth o una dependencia lenta.
+      // Las comprobaciones entre páginas impiden que esa lectura siga después.
+      const result = await Promise.race([operation(context), deadline]);
+      this.assertReadContext(context);
+      return result;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
   async listInvoicesByRutForDebug(normalizedRut: string) {
@@ -528,7 +679,17 @@ export class ZohoBooksService {
   async findDebtByRutUsingContactFirst(
     normalizedRut: string,
   ): Promise<ZohoDebtByRutContactFirstResult> {
-    const contacts = await this.findContactsByRut(normalizedRut);
+    return this.withZohoReadContext((context) =>
+      this.readDebtByRutUsingContactFirst(normalizeRut(normalizedRut), context),
+    );
+  }
+
+  private async readDebtByRutUsingContactFirst(
+    normalizedRut: string,
+    context: ZohoReadContext,
+  ): Promise<ZohoDebtByRutContactFirstResult> {
+    const invoiceMaxPages = this.readLimit('ZOHO_INVOICES_MAX_PAGES', 20, 100);
+    const contacts = await this.readContactsByRut(normalizedRut, context);
 
     if (contacts.length === 0) {
       return {
@@ -544,7 +705,9 @@ export class ZohoBooksService {
 
     const sortedContacts = [...contacts].sort(
       (a, b) =>
-        this.getContactReceivableAmount(b) - this.getContactReceivableAmount(a),
+        this.getContactReceivableAmount(b) -
+          this.getContactReceivableAmount(a) ||
+        (a.contact_id ?? '').localeCompare(b.contact_id ?? ''),
     );
 
     const evaluatedCandidates: ZohoContactDebtCandidate[] = [];
@@ -554,9 +717,10 @@ export class ZohoBooksService {
         continue;
       }
 
-      const invoices = await this.listUnpaidInvoicesByContactId(
+      const invoices = await this.readUnpaidInvoicesByContactId(
         contact.contact_id,
-        3,
+        invoiceMaxPages,
+        context,
       );
 
       const mappedInvoices = invoices.map((invoice) =>
@@ -575,18 +739,22 @@ export class ZohoBooksService {
       };
 
       evaluatedCandidates.push(candidate);
-
-      if (candidate.totalDebt > 0) {
-        return this.buildContactFirstDebtResult(
-          normalizedRut,
-          contacts.length,
-          candidate,
-          evaluatedCandidates,
-        );
-      }
     }
 
-    const fallbackCandidate = evaluatedCandidates[0];
+    // El modelo local guarda un solo zohoCustomerId. No elegir silenciosamente
+    // una parte de la deuda si dos contactos del mismo RUT tienen saldo.
+    const payableCandidates = evaluatedCandidates.filter(
+      (candidate) => candidate.totalDebt > 0,
+    );
+    if (payableCandidates.length > 1) {
+      throw new ConflictException({
+        code: 'ZOHO_MULTIPLE_DEBT_CONTACTS',
+        message:
+          'Zoho tiene más de un contacto con deuda para este RUT. Revisa los contactos antes de generar un pago; no se actualizaron los saldos locales.',
+      });
+    }
+
+    const fallbackCandidate = payableCandidates[0] ?? evaluatedCandidates[0];
 
     if (!fallbackCandidate) {
       return {

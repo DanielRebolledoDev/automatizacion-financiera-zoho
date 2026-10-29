@@ -1,3 +1,4 @@
+import { IntegrationsAdminGuard } from '../integrations/integrations-admin.guard';
 import {
   Body,
   Controller,
@@ -5,6 +6,7 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { PaymentsService } from './payments.service';
@@ -14,11 +16,13 @@ export class PaymentsController {
   constructor(private readonly paymentsService: PaymentsService) {}
 
   @Post()
+  @UseGuards(IntegrationsAdminGuard)
   createPayment(@Body() createPaymentDto: CreatePaymentDto) {
     return this.paymentsService.createPayment(createPaymentDto);
   }
 
   @Get(':paymentId/status')
+  @UseGuards(IntegrationsAdminGuard)
   findPaymentStatusById(
     @Param('paymentId', new ParseUUIDPipe()) paymentId: string,
   ) {

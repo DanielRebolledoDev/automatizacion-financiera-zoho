@@ -9,6 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import {
   DocumentType,
+  EventSource,
   PaymentStatus,
   Prisma,
   ZohoSyncStatus,
@@ -23,6 +24,12 @@ import type {
 } from './interfaces/zoho-customer-payment.interface';
 import { ZohoBooksService } from './zoho-books.service';
 import { normalizeRut } from '../../common/utils/rut.util';
+import { validateInvoiceForPayment } from './utils/zoho-payment-preflight.util';
+import {
+  asObject,
+  compareZohoPayment,
+  validateStoredZohoPayload,
+} from './utils/zoho-payment-reconciliation.util';
 
 @Injectable()
 export class ZohoCustomerPaymentsService {
@@ -88,6 +95,9 @@ export class ZohoCustomerPaymentsService {
     }
     this.assertCustomerIsAllowedForZohoWrite(payment.customer.rutNormalized);
 
+    const organizationId = this.zohoBooksService.getOrganizationId();
+    await this.validateRemoteInvoices(payload, organizationId);
+
     const attemptId = randomUUID();
     // Reserva persistente antes del POST. No mantenemos una transacción abierta
     // durante la llamada de red ni liberamos automáticamente reservas antiguas.
@@ -106,6 +116,7 @@ export class ZohoCustomerPaymentsService {
       data: {
         zohoSyncStatus: ZohoSyncStatus.SENDING,
         zohoSyncAttemptId: attemptId,
+        zohoSyncOrganizationId: organizationId,
         zohoSyncStartedAt: new Date(),
         zohoSyncPayload: JSON.parse(
           JSON.stringify(payload),
@@ -126,6 +137,8 @@ export class ZohoCustomerPaymentsService {
         await this.zohoBooksService.postToBooks<ZohoCustomerPaymentResponse>(
           '/customerpayments',
           payload,
+          {},
+          organizationId,
         );
 
       const responseId = zohoResponse?.payment?.payment_id;
@@ -207,6 +220,293 @@ export class ZohoCustomerPaymentsService {
         remotePaymentId,
         reviewRequired: true,
       });
+    }
+  }
+
+  async reconcileCustomerPayment(paymentId: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+    });
+    if (!payment)
+      throw new NotFoundException('No se encontró el pago solicitado.');
+
+    const report = (
+      outcome: string,
+      message: string,
+      details: Record<string, unknown> = {},
+    ) => ({
+      localPaymentId: paymentId,
+      outcome,
+      reconciled: false,
+      remoteWriteAttempted: false,
+      resendAllowed: false,
+      message,
+      ...details,
+    });
+
+    if (
+      payment.zohoSyncStatus === ZohoSyncStatus.SYNCED &&
+      payment.zohoCustomerPaymentId
+    ) {
+      return report(
+        'ALREADY_SYNCED',
+        'El pago ya tiene una confirmación local de Zoho.',
+        {
+          zohoCustomerPaymentId: payment.zohoCustomerPaymentId,
+        },
+      );
+    }
+    if (payment.status !== PaymentStatus.PAID) {
+      throw new BadRequestException(
+        'La conciliación requiere un pago local PAID.',
+      );
+    }
+    if (payment.khipuPaymentId?.startsWith('mock_')) {
+      return report(
+        'MOCK_NOT_APPLICABLE',
+        'El pago es Mock. No se consultó ni se escribió en Zoho.',
+      );
+    }
+    if (payment.zohoSyncStatus === ZohoSyncStatus.SENDING) {
+      return report(
+        'SENDING_REQUIRES_INSPECTION',
+        'La reserva sigue SENDING: puede haber una solicitud activa o interrumpida. No se cambia ni se libera automáticamente.',
+      );
+    }
+    if (payment.zohoSyncStatus === ZohoSyncStatus.FAILED) {
+      return report(
+        'LEGACY_REQUIRES_INSPECTION',
+        'Es un fallo anterior al registro persistente de intentos. Requiere revisión individual.',
+      );
+    }
+    if (payment.zohoSyncStatus !== ZohoSyncStatus.REVIEW_REQUIRED) {
+      return report(
+        'NO_UNCERTAIN_ATTEMPT',
+        'No hay un envío incierto registrado para conciliar.',
+      );
+    }
+    if (
+      payment.zohoCustomerPaymentId ||
+      !payment.zohoSyncAttemptId ||
+      !payment.khipuPaymentId
+    ) {
+      return report(
+        'INCONSISTENT_LOCAL_STATE',
+        'Falta evidencia del intento o el registro local es inconsistente.',
+      );
+    }
+
+    const organizationId = payment.zohoSyncOrganizationId;
+    if (!organizationId) {
+      return report(
+        'ORGANIZATION_NOT_RECORDED',
+        'El intento no tiene organización registrada. Requiere revisión manual; no se infiere desde la configuración actual.',
+      );
+    }
+    if (organizationId !== this.zohoBooksService.getOrganizationId()) {
+      return report(
+        'ORGANIZATION_MISMATCH',
+        'La organización configurada no coincide con la del intento. No se consultó Zoho.',
+      );
+    }
+
+    const stored = validateStoredZohoPayload(payment.zohoSyncPayload, {
+      id: payment.id,
+      amount: payment.amount,
+      khipuPaymentId: payment.khipuPaymentId,
+      currency: payment.currency,
+    });
+    if (!stored)
+      return report(
+        'INVALID_SNAPSHOT',
+        'El contenido guardado del intento no permite una conciliación automática.',
+      );
+
+    const candidateIds = new Set<string>();
+    let complete = false;
+    // Búsqueda acotada. Un resultado incompleto nunca confirma ni permite reenviar.
+    for (let page = 1; page <= 5; page += 1) {
+      const response = asObject(
+        await this.zohoBooksService.getFromBooks<unknown>(
+          '/customerpayments',
+          {
+            customer_id: String(stored.customer_id),
+            reference_number: String(stored.reference_number),
+            page,
+            per_page: 200,
+          },
+          { expectedOrganizationId: organizationId },
+        ),
+      );
+      if (response?.code !== 0 || !Array.isArray(response.customerpayments)) {
+        throw new ServiceUnavailableException(
+          'Zoho respondió sin un listado válido de pagos. Se conserva el bloqueo.',
+        );
+      }
+      for (const value of response.customerpayments) {
+        const row = asObject(value);
+        if (
+          !row ||
+          typeof row.payment_id !== 'string' ||
+          !row.payment_id.trim() ||
+          typeof row.customer_id !== 'string' ||
+          typeof row.reference_number !== 'string'
+        )
+          return report(
+            'INCOMPLETE_SEARCH',
+            'El listado de Zoho no contiene suficientes datos para comprobar las coincidencias.',
+          );
+        if (
+          row.customer_id === stored.customer_id &&
+          row.reference_number === stored.reference_number
+        ) {
+          candidateIds.add(row.payment_id);
+        }
+      }
+      if (candidateIds.size > 1) {
+        return report(
+          'MULTIPLE_MATCHES',
+          'Hay varios pagos para el cliente y referencia. Revisión manual obligatoria.',
+          {
+            candidatePaymentIds: [...candidateIds],
+          },
+        );
+      }
+      const pagination = asObject(response.page_context);
+      if (pagination?.has_more_page === false) {
+        complete = true;
+        break;
+      }
+      if (pagination?.has_more_page !== true) {
+        return report(
+          'INCOMPLETE_SEARCH',
+          'Zoho no indicó si quedan páginas. No se confirma automáticamente.',
+        );
+      }
+    }
+    if (!complete)
+      return report(
+        'INCOMPLETE_SEARCH',
+        'La búsqueda alcanzó su límite. Se conserva el bloqueo.',
+      );
+    if (candidateIds.size === 0) {
+      return report(
+        'NOT_FOUND',
+        'No se encontró una coincidencia. Esto no demuestra que el envío nunca haya llegado; no se habilita el reenvío.',
+      );
+    }
+
+    const remoteId = [...candidateIds][0];
+    if (
+      payment.zohoSyncRemotePaymentId &&
+      payment.zohoSyncRemotePaymentId !== remoteId
+    ) {
+      return report(
+        'REMOTE_ID_MISMATCH',
+        'La coincidencia no corresponde al ID remoto guardado en el intento.',
+      );
+    }
+    const detail = asObject(
+      await this.zohoBooksService.getFromBooks<unknown>(
+        `/customerpayments/${encodeURIComponent(remoteId)}`,
+        {},
+        { expectedOrganizationId: organizationId },
+      ),
+    );
+    if (detail?.code !== 0) {
+      throw new ServiceUnavailableException(
+        'No se obtuvo un detalle válido de Zoho. Se conserva el bloqueo.',
+      );
+    }
+    const differences = compareZohoPayment(stored, detail.payment, remoteId);
+    if (differences.length > 0) {
+      return report(
+        'DATA_MISMATCH',
+        'El pago remoto no coincide íntegramente con el intento guardado.',
+        { differences },
+      );
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: PaymentStatus.PAID,
+          updatedAt: payment.updatedAt,
+          zohoSyncStatus: ZohoSyncStatus.REVIEW_REQUIRED,
+          zohoSyncAttemptId: payment.zohoSyncAttemptId,
+          zohoSyncOrganizationId: organizationId,
+          zohoCustomerPaymentId: null,
+        },
+        data: {
+          zohoCustomerPaymentId: remoteId,
+          zohoSyncRemotePaymentId: remoteId,
+          zohoSyncedAt: new Date(),
+          zohoSyncStatus: ZohoSyncStatus.SYNCED,
+          zohoSyncError: null,
+        },
+      });
+      if (saved.count !== 1) {
+        throw new ConflictException(
+          'El estado local cambió durante la conciliación. Consulta el resultado antes de continuar.',
+        );
+      }
+      await tx.paymentEvent.create({
+        data: {
+          paymentId: payment.id,
+          eventSource: EventSource.ZOHO,
+          eventType: 'zoho.payment.reconciled',
+          externalEventId: `zoho-reconciled-${payment.id}`,
+          payload: {
+            attemptId: payment.zohoSyncAttemptId,
+            organizationId,
+            zohoCustomerPaymentId: remoteId,
+            matchedBy:
+              'customer-reference-amount-currency-date-description-invoices',
+          },
+          processed: true,
+          processedAt: new Date(),
+        },
+      });
+    });
+
+    return {
+      localPaymentId: paymentId,
+      outcome: 'RECONCILED',
+      reconciled: true,
+      zohoCustomerPaymentId: remoteId,
+      remoteWriteAttempted: false,
+      resendAllowed: false,
+      message:
+        'Se confirmó localmente el pago ya existente en Zoho. No se creó otro pago remoto.',
+    };
+  }
+
+  private async validateRemoteInvoices(
+    payload: ZohoCreateCustomerPaymentPayload,
+    organizationId: string,
+  ): Promise<void> {
+    // Lecturas antes de reservar/enviar: un fallo aquí no crea un intento incierto.
+    // No bloquean la factura remota frente a cambios posteriores de otros actores.
+    for (const invoice of payload.invoices) {
+      const response = await this.zohoBooksService.getFromBooks<unknown>(
+        `/invoices/${encodeURIComponent(invoice.invoice_id)}`,
+        {},
+        { expectedOrganizationId: organizationId },
+      );
+      const differences = validateInvoiceForPayment(response, {
+        invoiceId: invoice.invoice_id,
+        customerId: payload.customer_id,
+        amount: invoice.amount_applied,
+      });
+      if (differences.length > 0) {
+        throw new ConflictException({
+          message:
+            'La factura de Zoho no permite aplicar el monto previsto. No se envió el pago.',
+          invoiceId: invoice.invoice_id,
+          differences,
+        });
+      }
     }
   }
 

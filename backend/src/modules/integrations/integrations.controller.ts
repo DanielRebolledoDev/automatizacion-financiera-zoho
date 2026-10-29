@@ -5,12 +5,15 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import { IntegrationsService } from './integrations.service';
+import { IntegrationsAdminGuard } from './integrations-admin.guard';
 import { ZohoDebtByRutTestDto } from './dto/zoho-debt-by-rut-test.dto';
 import { KhipuService } from '../khipu/khipu.service';
 
 @Controller('integrations')
+@UseGuards(IntegrationsAdminGuard)
 export class IntegrationsController {
   constructor(
     private readonly integrationsService: IntegrationsService,
@@ -69,6 +72,13 @@ export class IntegrationsController {
     @Param('paymentId', new ParseUUIDPipe()) paymentId: string,
   ) {
     return this.integrationsService.syncZohoCustomerPaymentTest(paymentId);
+  }
+
+  @Post('zoho/customer-payment-reconcile/:paymentId')
+  reconcileZohoCustomerPayment(
+    @Param('paymentId', new ParseUUIDPipe()) paymentId: string,
+  ) {
+    return this.integrationsService.reconcileZohoCustomerPayment(paymentId);
   }
 
   @Post('zoho/invoices-by-rut-debug')

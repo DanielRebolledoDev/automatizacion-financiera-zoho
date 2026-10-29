@@ -29,7 +29,23 @@ export default tseslint.config(
       '@typescript-eslint/no-explicit-any': 'off',
       '@typescript-eslint/no-floating-promises': 'warn',
       '@typescript-eslint/no-unsafe-argument': 'warn',
-      "prettier/prettier": ["error", { endOfLine: "auto" }],
+      'prettier/prettier': ['error', { endOfLine: 'auto' }],
+    },
+  },
+  {
+    files: ['test/**/*.cjs'],
+    extends: [tseslint.configs.disableTypeChecked],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        ...Object.fromEntries(
+          Object.keys(globals.jest).map((name) => [name, 'off']),
+        ),
+        ...globals.node,
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
     },
   },
 );

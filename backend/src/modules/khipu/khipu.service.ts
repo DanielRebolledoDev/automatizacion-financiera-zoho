@@ -75,6 +75,7 @@ export class KhipuService {
 
     const response = await fetch(`${baseUrl}/payments`, {
       method: 'POST',
+      signal: AbortSignal.timeout(15000),
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',

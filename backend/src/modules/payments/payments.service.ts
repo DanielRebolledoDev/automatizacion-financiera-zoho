@@ -1,5 +1,7 @@
 import {
   BadRequestException,
+  ConflictException,
+  ServiceUnavailableException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -12,7 +14,7 @@ import {
   PaymentStatus,
   Prisma,
 } from '@prisma/client';
-import { createHash } from 'crypto';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { KhipuService } from '../khipu/khipu.service';
 import type { KhipuWebhookPayload } from '../khipu/interfaces/khipu-webhook.interface';
@@ -38,118 +40,144 @@ export class PaymentsService {
     createPaymentDto: CreatePaymentDto,
     options?: { expectedAmount?: number },
   ) {
-    const customer = await this.prisma.customer.findUnique({
-      where: {
-        id: createPaymentDto.customerId,
-      },
-      select: {
-        id: true,
-        rut: true,
-        businessName: true,
-      },
-    });
-
-    if (!customer) {
-      throw new NotFoundException('No se encontró el cliente solicitado.');
-    }
-
-    const documents = await this.getDocumentsForPayment(createPaymentDto);
-
-    if (documents.length === 0) {
-      throw new BadRequestException(
-        'No existen documentos pendientes para generar el pago.',
+    const provider =
+      this.configService.get<string>('KHIPU_PROVIDER')?.trim() ?? 'mock';
+    if (provider !== 'mock' && provider !== 'real') {
+      throw new ServiceUnavailableException(
+        'El proveedor de pago no es válido.',
       );
     }
 
-    const amount = documents.reduce(
-      (sum, document) => sum + document.outstandingAmount,
-      0,
+    const reservation = await this.prisma.$transaction(
+      async (tx) => {
+        // Bloqueo persistente por cliente, compartido por todos los procesos.
+        // Solo protege operaciones locales: nunca esperamos a Khipu aquí.
+        const locked = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM customers
+          WHERE id = ${createPaymentDto.customerId} FOR UPDATE
+        `;
+        if (locked.length !== 1) {
+          throw new NotFoundException('No se encontró el cliente solicitado.');
+        }
+        const customer = await tx.customer.findUniqueOrThrow({
+          where: { id: createPaymentDto.customerId },
+          select: { id: true, rut: true, businessName: true },
+        });
+        const documents = await this.getDocumentsForPayment(
+          createPaymentDto,
+          tx,
+        );
+        if (documents.length === 0) {
+          throw new BadRequestException(
+            'No existen documentos pendientes para generar el pago.',
+          );
+        }
+        if (
+          documents.some(
+            (document) =>
+              document.currency !== 'CLP' ||
+              !Number.isSafeInteger(document.outstandingAmount) ||
+              document.outstandingAmount <= 0,
+          )
+        ) {
+          throw new BadRequestException(
+            'Los documentos deben tener saldos enteros positivos en CLP.',
+          );
+        }
+        const amount = documents.reduce(
+          (sum, document) => sum + document.outstandingAmount,
+          0,
+        );
+        if (!Number.isSafeInteger(amount) || amount > 2147483647) {
+          throw new BadRequestException('El monto supera el límite permitido.');
+        }
+        if (
+          options?.expectedAmount !== undefined &&
+          amount !== options.expectedAmount
+        ) {
+          throw new BadRequestException(
+            'La deuda cambió durante la generación del pago. Vuelve a consultarla antes de pagar.',
+          );
+        }
+        const existing = await this.findReservedPayment(tx, {
+          customerId: customer.id,
+          amount,
+          documentIds: documents.map((document) => document.id),
+          provider,
+        });
+        if (existing) {
+          return { created: false as const, payment: existing };
+        }
+
+        const payment = await tx.payment.create({
+          data: {
+            customerId: customer.id,
+            mode: createPaymentDto.mode,
+            amount,
+            currency: 'CLP',
+            status: PaymentStatus.CREATED,
+            idempotencyKey: `payment-${randomUUID()}`,
+          },
+        });
+        await tx.paymentDocument.createMany({
+          data: documents.map((document) => ({
+            paymentId: payment.id,
+            documentId: document.id,
+            amount: document.outstandingAmount,
+          })),
+        });
+        const attempt = await tx.paymentAttempt.create({
+          data: {
+            paymentId: payment.id,
+            customerId: customer.id,
+            mode: payment.mode,
+            amount,
+            status: PaymentStatus.CREATED,
+            requestPayload: {
+              action: 'create-payment',
+              provider,
+              localPaymentId: payment.id,
+              amount,
+              currency: 'CLP',
+            },
+          },
+        });
+        return {
+          created: true as const,
+          payment,
+          customer,
+          attemptId: attempt.id,
+        };
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        maxWait: 5000,
+        timeout: 10000,
+      },
     );
 
-    if (
-      options?.expectedAmount !== undefined &&
-      amount !== options.expectedAmount
-    ) {
-      throw new BadRequestException(
-        `La deuda cambió durante la generación del pago. ` +
-          `Zoho informa ${options.expectedAmount} CLP, ` +
-          `pero la deuda local sincronizada suma ${amount} CLP. ` +
-          `Vuelve a consultar la deuda antes de pagar.`,
-      );
-    }
-
-    if (amount <= 0) {
-      throw new BadRequestException('El monto del pago debe ser mayor a cero.');
-    }
-
-    const documentIds = documents.map((document) => document.id);
-
-    const existingPayment = await this.findActivePaymentForSameSelection({
-      customerId: customer.id,
-      mode: createPaymentDto.mode,
-      amount,
-      documentIds,
-    });
-
-    if (existingPayment) {
-      const paymentToReturn =
-        existingPayment.khipuPaymentId && existingPayment.khipuPaymentUrl
-          ? existingPayment
-          : await this.attachMockKhipuPayment({
-              paymentId: existingPayment.id,
-              customer,
-              amount: existingPayment.amount,
-              mode: existingPayment.mode,
-            });
-
+    if (!reservation.created) {
       return {
         message: 'Ya existe una intención de pago activa para esta selección.',
         reused: true,
-        payment: this.mapPaymentResponse(paymentToReturn),
+        payment: this.mapPaymentResponse(reservation.payment),
       };
     }
 
-    const idempotencyKey = this.generateIdempotencyKey({
-      customerId: customer.id,
-      mode: createPaymentDto.mode,
-      documentIds,
-      amount,
+    // Solo la solicitud que creó y confirmó la reserva puede enviar el POST.
+    // Una reserva sin URL jamás provoca un reenvío automático, ni tras reiniciar.
+    const payment = await this.attachReservedKhipuPayment({
+      paymentId: reservation.payment.id,
+      customer: reservation.customer,
+      amount: reservation.payment.amount,
+      mode: reservation.payment.mode,
+      attemptId: reservation.attemptId,
+      provider,
     });
-
-    const createdPayment = await this.prisma.$transaction(async (tx) => {
-      const payment = await tx.payment.create({
-        data: {
-          customerId: customer.id,
-          mode: createPaymentDto.mode,
-          amount,
-          currency: 'CLP',
-          status: PaymentStatus.CREATED,
-          idempotencyKey,
-        },
-      });
-
-      await tx.paymentDocument.createMany({
-        data: documents.map((document) => ({
-          paymentId: payment.id,
-          documentId: document.id,
-          amount: document.outstandingAmount,
-        })),
-      });
-
-      return payment;
-    });
-
-    const paymentWithMockKhipu = await this.attachMockKhipuPayment({
-      paymentId: createdPayment.id,
-      customer,
-      amount,
-      mode: createPaymentDto.mode,
-    });
-
     return {
       message: 'Intención de pago creada correctamente.',
       reused: false,
-      payment: this.mapPaymentResponse(paymentWithMockKhipu),
+      payment: this.mapPaymentResponse(payment),
     };
   }
 
@@ -1021,7 +1049,10 @@ export class PaymentsService {
     };
   }
 
-  private async getDocumentsForPayment(createPaymentDto: CreatePaymentDto) {
+  private async getDocumentsForPayment(
+    createPaymentDto: CreatePaymentDto,
+    tx: Prisma.TransactionClient,
+  ) {
     const payableStatuses = [
       DocumentStatus.PENDING,
       DocumentStatus.OVERDUE,
@@ -1040,7 +1071,7 @@ export class PaymentsService {
 
       const uniqueDocumentIds = [...new Set(createPaymentDto.documentIds)];
 
-      const documents = await this.prisma.customerDocument.findMany({
+      const documents = await tx.customerDocument.findMany({
         where: {
           id: {
             in: uniqueDocumentIds,
@@ -1073,7 +1104,7 @@ export class PaymentsService {
     }
 
     if (createPaymentDto.mode === PaymentMode.OVERDUE_DEBT) {
-      return this.prisma.customerDocument.findMany({
+      return tx.customerDocument.findMany({
         where: {
           customerId: createPaymentDto.customerId,
           status: DocumentStatus.OVERDUE,
@@ -1092,7 +1123,7 @@ export class PaymentsService {
       });
     }
 
-    return this.prisma.customerDocument.findMany({
+    return tx.customerDocument.findMany({
       where: {
         customerId: createPaymentDto.customerId,
         status: {
@@ -1113,153 +1144,199 @@ export class PaymentsService {
     });
   }
 
-  private async attachMockKhipuPayment(params: {
+  private async attachReservedKhipuPayment(params: {
     paymentId: string;
-    customer: {
-      id: string;
-      rut: string;
-      businessName: string;
-    };
+    customer: { id: string; rut: string; businessName: string };
     amount: number;
     mode: PaymentMode;
+    attemptId: string;
+    provider: 'mock' | 'real';
   }) {
-    const frontendUrl = this.getFrontendBaseUrl();
-    const publicBackendUrl = this.getPublicBackendBaseUrl();
+    let observedPaymentId: string | null = null;
+    try {
+      const frontendUrl = this.getFrontendBaseUrl();
+      const publicBackendUrl = this.getPublicBackendBaseUrl();
+      const currentProvider =
+        this.configService.get<string>('KHIPU_PROVIDER')?.trim() ?? 'mock';
+      if (currentProvider !== params.provider) {
+        throw new ConflictException(
+          'El proveedor cambió después de reservar el pago.',
+        );
+      }
+      const khipuPayment = await this.khipuService.createPayment({
+        localPaymentId: params.paymentId,
+        amount: params.amount,
+        currency: 'CLP',
+        subject: `Pago ${params.mode} - ${params.customer.businessName}`,
+        body: `Pago generado desde Portal Pago Express. ID local: ${params.paymentId}`,
+        returnUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}`,
+        cancelUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}?cancelled=1`,
+        notifyUrl: `${publicBackendUrl}/api/webhooks/khipu/real`,
+      });
+      observedPaymentId = khipuPayment.paymentId;
+      if (
+        !khipuPayment.paymentId ||
+        !khipuPayment.paymentUrl ||
+        khipuPayment.paymentId.startsWith('mock_') !==
+          (params.provider === 'mock')
+      ) {
+        throw new ServiceUnavailableException(
+          'El proveedor devolvió un cobro inválido.',
+        );
+      }
 
-    const khipuPayment = await this.khipuService.createPayment({
-      localPaymentId: params.paymentId,
-      amount: params.amount,
-      currency: 'CLP',
-      subject: `Pago ${params.mode} - ${params.customer.businessName}`,
-      body: `Pago generado desde Portal Pago Express. ID local: ${params.paymentId}`,
-      returnUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}`,
-      cancelUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}?cancelled=1`,
-      notifyUrl: `${publicBackendUrl}/api/webhooks/khipu/real`,
-    });
-
-    const provider =
-      this.configService.get<string>('KHIPU_PROVIDER')?.trim() ?? 'mock';
-
-    return this.prisma.payment.update({
-      where: {
-        id: params.paymentId,
-      },
-      data: {
-        status: PaymentStatus.PENDING,
-        khipuPaymentId: khipuPayment.paymentId,
-        khipuPaymentUrl: khipuPayment.paymentUrl,
-        expiresAt: khipuPayment.expiresAt ?? null,
-        attempts: {
-          create: {
-            customerId: params.customer.id,
-            mode: params.mode,
-            amount: params.amount,
+      return await this.prisma.$transaction(async (tx) => {
+        const attached = await tx.payment.updateMany({
+          where: {
+            id: params.paymentId,
+            status: PaymentStatus.CREATED,
+            khipuPaymentId: null,
+            khipuPaymentUrl: null,
+          },
+          data: {
             status: PaymentStatus.PENDING,
-            requestPayload: {
-              provider: provider === 'real' ? 'KHIPU_REAL' : 'MOCK_KHIPU',
-              paymentId: params.paymentId,
-              amount: params.amount,
-              currency: 'CLP',
-              subject: `Pago ${params.mode} - ${params.customer.businessName}`,
-              customerRut: params.customer.rut,
-              returnUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}`,
-              cancelUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}?cancelled=1`,
-              notifyUrl: `${publicBackendUrl}/api/webhooks/khipu/real`,
-            },
+            khipuPaymentId: khipuPayment.paymentId,
+            khipuPaymentUrl: khipuPayment.paymentUrl,
+            expiresAt: khipuPayment.expiresAt ?? null,
+          },
+        });
+        if (attached.count !== 1) {
+          throw new ConflictException(
+            'El pago cambió mientras se creaba el cobro.',
+          );
+        }
+        await tx.paymentAttempt.update({
+          where: { id: params.attemptId },
+          data: {
+            status: PaymentStatus.PENDING,
+            errorMessage: null,
             responsePayload: JSON.parse(
               JSON.stringify(khipuPayment),
             ) as Prisma.InputJsonValue,
           },
-        },
-      },
-      include: {
-        documents: {
-          include: {
-            document: true,
-          },
-        },
-      },
-    });
+        });
+        return tx.payment.findUniqueOrThrow({
+          where: { id: params.paymentId },
+          include: { documents: { include: { document: true } } },
+        });
+      });
+    } catch {
+      // No sabemos si Khipu recibió el POST. Conservamos CREATED y su reserva.
+      // El diagnóstico es secundario: aunque falle, el bloqueo queda persistido.
+      try {
+        await this.prisma.$transaction(async (tx) => {
+          await tx.paymentAttempt.update({
+            where: { id: params.attemptId },
+            data: {
+              errorMessage:
+                'Creación sin confirmar. Requiere revisión; no reenviar automáticamente.',
+              responsePayload: { reviewRequired: true, observedPaymentId },
+            },
+          });
+          await tx.paymentEvent.create({
+            data: {
+              paymentId: params.paymentId,
+              eventSource: EventSource.SYSTEM,
+              eventType: 'payment.creation.review_required',
+              externalEventId: `creation-review-${params.paymentId}`,
+              payload: { provider: params.provider, observedPaymentId },
+              processed: false,
+            },
+          });
+        });
+      } catch {
+        // No liberar la reserva si también falla la escritura del diagnóstico.
+      }
+      throw new ServiceUnavailableException({
+        message:
+          'No se pudo confirmar la creación del cobro. No se generará otro automáticamente. Contacta a soporte con el ID del pago.',
+        paymentId: params.paymentId,
+        code: 'PAYMENT_CREATION_REVIEW_REQUIRED',
+      });
+    }
   }
 
-  private async findActivePaymentForSameSelection(params: {
-    customerId: string;
-    mode: PaymentMode;
-    amount: number;
-    documentIds: string[];
-  }) {
-    const provider =
-      this.configService.get<string>('KHIPU_PROVIDER')?.trim() ?? 'mock';
-    const useMock = provider !== 'real';
-    const now = Date.now();
-
-    const candidates = await this.prisma.payment.findMany({
+  private async findReservedPayment(
+    tx: Prisma.TransactionClient,
+    params: {
+      customerId: string;
+      amount: number;
+      documentIds: string[];
+      provider: 'mock' | 'real';
+    },
+  ) {
+    const candidates = await tx.payment.findMany({
       where: {
         customerId: params.customerId,
-        mode: params.mode,
-        amount: params.amount,
-        status: {
-          in: ACTIVE_PAYMENT_STATUSES,
-        },
+        status: { in: [...ACTIVE_PAYMENT_STATUSES, PaymentStatus.PAID] },
+        documents: { some: { documentId: { in: params.documentIds } } },
       },
-      include: {
-        documents: {
-          include: {
-            document: true,
+      include: { documents: { include: { document: true } } },
+    });
+    const active: typeof candidates = [];
+    for (const payment of candidates) {
+      if (payment.status === PaymentStatus.PAID) {
+        throw new ConflictException(
+          'Una factura seleccionada ya tiene un pago confirmado en el portal. Debe revisarse su sincronización antes de volver a cobrarla.',
+        );
+      }
+      if (
+        payment.khipuPaymentId?.startsWith('mock_') &&
+        payment.status !== PaymentStatus.IN_PROGRESS &&
+        payment.expiresAt &&
+        payment.expiresAt.getTime() <= Date.now()
+      ) {
+        const expired = await tx.payment.updateMany({
+          where: {
+            id: payment.id,
+            status: payment.status,
+            updatedAt: payment.updatedAt,
           },
-        },
-      },
-    });
-
-    const requestedDocumentIds = [...params.documentIds].sort().join('|');
-
-    return (
-      candidates.find((payment) => {
-        // Una URL ya creada pertenece a su proveedor original. Cambiar el
-        // entorno no convierte cobros reales en simulados ni viceversa.
-        if (payment.khipuPaymentId) {
-          const paymentIsMock = payment.khipuPaymentId.startsWith('mock_');
-          if (paymentIsMock !== useMock) return false;
-
-          // No volver a abrir un checkout Mock cuya vigencia ya terminó.
-          // Conservamos IN_PROGRESS para no iniciar otro pago en verificación.
-          if (
-            paymentIsMock &&
-            payment.status !== PaymentStatus.IN_PROGRESS &&
-            payment.expiresAt &&
-            payment.expiresAt.getTime() <= now
-          ) {
-            return false;
-          }
+          data: { status: PaymentStatus.EXPIRED },
+        });
+        if (expired.count !== 1) {
+          throw new ConflictException(
+            'El pago cambió; consulta su estado antes de continuar.',
+          );
         }
-
-        const paymentDocumentIds = payment.documents
-          .map((paymentDocument) => paymentDocument.documentId)
-          .sort()
-          .join('|');
-
-        return paymentDocumentIds === requestedDocumentIds;
-      }) ?? null
-    );
-  }
-
-  private generateIdempotencyKey(params: {
-    customerId: string;
-    mode: PaymentMode;
-    documentIds: string[];
-    amount: number;
-  }) {
-    const sortedDocumentIds = [...params.documentIds].sort();
-
-    const rawKey = JSON.stringify({
-      customerId: params.customerId,
-      mode: params.mode,
-      documentIds: sortedDocumentIds,
-      amount: params.amount,
-      createdAt: new Date().toISOString(),
-    });
-
-    return createHash('sha256').update(rawKey).digest('hex');
+        continue;
+      }
+      active.push(payment);
+    }
+    if (active.length === 0) return null;
+    if (active.length !== 1) {
+      throw new ConflictException(
+        'Hay varios cobros activos para estas facturas. Requieren revisión.',
+      );
+    }
+    const payment = active[0];
+    if (!payment.khipuPaymentId || !payment.khipuPaymentUrl) {
+      throw new ConflictException({
+        message:
+          'Ya existe un cobro en preparación o pendiente de revisión. Espera la respuesta de la primera solicitud; si el problema persiste, contacta a soporte.',
+        paymentId: payment.id,
+        code: 'PAYMENT_CREATION_RESERVED',
+      });
+    }
+    if (
+      payment.khipuPaymentId.startsWith('mock_') !==
+      (params.provider === 'mock')
+    ) {
+      throw new ConflictException(
+        'Existe un cobro de otro entorno para estas facturas. Revísalo antes de generar uno nuevo.',
+      );
+    }
+    const requested = [...params.documentIds].sort().join('|');
+    const reserved = payment.documents
+      .map((item) => item.documentId)
+      .sort()
+      .join('|');
+    if (requested !== reserved || payment.amount !== params.amount) {
+      throw new ConflictException(
+        'Estas facturas ya tienen un cobro activo con otra selección o monto. Revísalo antes de generar uno nuevo.',
+      );
+    }
+    return payment;
   }
 
   private mapPaymentResponse(

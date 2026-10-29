@@ -131,6 +131,7 @@ model Payment {
   zohoSyncError         String?        @db.Text
   zohoSyncAttemptId     String?        @db.Char(36)
   zohoSyncStartedAt     DateTime?
+  zohoSyncOrganizationId String?      @db.VarChar(100)
   zohoSyncPayload       Json?
   zohoSyncRemotePaymentId String?      @db.VarChar(100)
 

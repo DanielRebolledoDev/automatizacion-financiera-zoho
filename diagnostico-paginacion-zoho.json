@@ -1,0 +1,233 @@
+{
+  "diagnostic": "zoho-pagination-37d-fix",
+  "completed": true,
+  "localDatabaseAccessed": false,
+  "businessWritesAttempted": false,
+  "pages": [
+    {
+      "collection": "contacts",
+      "requestedPage": 1,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 1,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 2,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 2,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 3,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 3,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 4,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 4,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 5,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 5,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 6,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 6,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 7,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 7,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 8,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 8,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 1
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 9,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 200,
+      "reportedPage": 9,
+      "reportedPerPage": 200,
+      "hasMore": true,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "contacts",
+      "requestedPage": 10,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "contact_type",
+        "page",
+        "per_page",
+        "sort_column"
+      ],
+      "customerIdFilterPresent": false,
+      "contactTypeCustomerFilterPresent": true,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 80,
+      "reportedPage": 10,
+      "reportedPerPage": 200,
+      "hasMore": false,
+      "exactRutMatchesOnPage": 0
+    },
+    {
+      "collection": "invoices",
+      "requestedPage": 1,
+      "requestedPerPage": 200,
+      "queryKeys": [
+        "customer_id",
+        "page",
+        "per_page",
+        "sort_column",
+        "status"
+      ],
+      "customerIdFilterPresent": true,
+      "contactTypeCustomerFilterPresent": false,
+      "rutSearchPresent": false,
+      "zohoCode": 0,
+      "itemCount": 1,
+      "reportedPage": 1,
+      "reportedPerPage": 200,
+      "hasMore": false,
+      "matchingCustomerCount": 1
+    }
+  ],
+  "contactFound": true,
+  "invoiceCount": 1,
+  "matchedContactsCount": 1,
+  "apiReadRequests": 11
+}
