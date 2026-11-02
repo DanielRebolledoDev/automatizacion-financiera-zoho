@@ -1276,6 +1276,30 @@ export class PaymentsService {
     const active: typeof candidates = [];
     for (const payment of candidates) {
       if (payment.status === PaymentStatus.PAID) {
+        // Las pruebas Mock no representan un pago bancario. Para pasar a la
+        // API durante la demostración, no bloquean si no existe evidencia de
+        // intento/envío a Zoho y ambas escrituras están explícitamente apagadas.
+        // No cambia el historial y nunca omite un pago con ID de Khipu no Mock.
+        const isUnsentMockFromDemo =
+          params.provider === 'real' &&
+          payment.khipuPaymentId?.startsWith('mock_') === true &&
+          this.configService
+            .get<string>('ZOHO_WRITE_PAYMENTS_ENABLED')
+            ?.trim() === 'false' &&
+          this.configService
+            .get<string>('ZOHO_AUTO_SYNC_PAYMENTS_ENABLED')
+            ?.trim() === 'false' &&
+          (payment.zohoSyncStatus === 'NOT_SYNCED' ||
+            payment.zohoSyncStatus === 'DRY_RUN_READY') &&
+          payment.zohoCustomerPaymentId === null &&
+          payment.zohoSyncRemotePaymentId === null &&
+          payment.zohoSyncAttemptId === null &&
+          payment.zohoSyncStartedAt === null &&
+          payment.zohoSyncOrganizationId === null &&
+          payment.zohoSyncPayload === null &&
+          payment.zohoSyncedAt === null &&
+          payment.zohoSyncError === null;
+        if (isUnsentMockFromDemo) continue;
         throw new ConflictException(
           'Una factura seleccionada ya tiene un pago confirmado en el portal. Debe revisarse su sincronización antes de volver a cobrarla.',
         );

@@ -52,6 +52,8 @@ function setup() {
   const calls = { posts: [], locks: 0, isolation: [], inTransaction: false };
   const config = {
     KHIPU_PROVIDER: 'mock',
+    ZOHO_WRITE_PAYMENTS_ENABLED: 'false',
+    ZOHO_AUTO_SYNC_PAYMENTS_ENABLED: 'false',
     CORS_ALLOWED_ORIGINS: 'http://localhost:5173',
     PUBLIC_BACKEND_URL: 'http://localhost:3000',
   };
@@ -222,6 +224,15 @@ function setup() {
       khipuPaymentId: `mock_${randomUUID()}`,
       khipuPaymentUrl: 'https://checkout.example.test/old',
       expiresAt: null,
+      zohoSyncStatus: 'NOT_SYNCED',
+      zohoCustomerPaymentId: null,
+      zohoSyncRemotePaymentId: null,
+      zohoSyncAttemptId: null,
+      zohoSyncStartedAt: null,
+      zohoSyncOrganizationId: null,
+      zohoSyncPayload: null,
+      zohoSyncedAt: null,
+      zohoSyncError: null,
       ...overrides,
     };
     state.payments.push(row);
@@ -480,4 +491,97 @@ test('Khipu real recibe señal de tiempo límite y solo un POST simulado', async
       throw new Error('Red real prohibida');
     };
   }
+});
+
+test('cuatro Mock PAID históricos sin envío: permite API y conserva todo el historial', async () => {
+  const s = setup();
+  s.config.KHIPU_PROVIDER = 'real';
+  for (let i = 0; i < 4; i++)
+    s.seed({
+      status: 'PAID',
+      zohoSyncStatus: i === 0 ? 'DRY_RUN_READY' : 'NOT_SYNCED',
+    });
+  const old = structuredClone(s.state().payments);
+  const first = await s.service().createPayment(dto);
+  assert.equal(first.reused, false);
+  assert.equal(s.calls.posts.length, 1);
+  assert.equal(s.state().payments.length, 5);
+  assert.deepEqual(s.state().payments.slice(0, 4), old);
+  const next = await s.service().createPayment(dto);
+  assert.equal(next.reused, true);
+  assert.equal(next.payment.id, first.payment.id);
+  assert.equal(s.calls.posts.length, 1);
+});
+test('Mock histórico omitido no oculta otro PAID de API en la misma factura', async () => {
+  const s = setup();
+  s.config.KHIPU_PROVIDER = 'real';
+  s.seed({ status: 'PAID' });
+  s.seed({ status: 'PAID', khipuPaymentId: 'api-paid' });
+  await assert.rejects(s.service().createPayment(dto), status(409));
+  assert.equal(s.calls.posts.length, 0);
+});
+for (const [field, value] of [
+  ['zohoSyncStatus', 'SYNCED'],
+  ['zohoSyncStatus', 'SENDING'],
+  ['zohoSyncStatus', 'REVIEW_REQUIRED'],
+  ['zohoSyncStatus', 'FAILED'],
+  ['zohoCustomerPaymentId', 'remote'],
+  ['zohoSyncRemotePaymentId', 'remote'],
+  ['zohoSyncAttemptId', 'attempt'],
+  ['zohoSyncStartedAt', new Date()],
+  ['zohoSyncOrganizationId', 'org'],
+  ['zohoSyncPayload', {}],
+  ['zohoSyncedAt', new Date()],
+  ['zohoSyncError', 'legacy failure'],
+  ['zohoSyncAttemptId', undefined],
+]) {
+  test(`Mock PAID con evidencia o dato desconocido ${field}=${String(value)} sigue bloqueado`, async () => {
+    const s = setup();
+    s.config.KHIPU_PROVIDER = 'real';
+    s.seed({ status: 'PAID', [field]: value });
+    await assert.rejects(s.service().createPayment(dto), status(409));
+    assert.equal(s.calls.posts.length, 0);
+  });
+}
+for (const key of [
+  'ZOHO_WRITE_PAYMENTS_ENABLED',
+  'ZOHO_AUTO_SYNC_PAYMENTS_ENABLED',
+]) {
+  for (const value of ['true', undefined]) {
+    test(`excepción Mock exige ${key}=false (valor recibido ${String(value)})`, async () => {
+      const s = setup();
+      s.config.KHIPU_PROVIDER = 'real';
+      s.config[key] = value;
+      s.seed({ status: 'PAID' });
+      await assert.rejects(s.service().createPayment(dto), status(409));
+      assert.equal(s.calls.posts.length, 0);
+    });
+  }
+}
+test('PAID sin ID de proveedor no se clasifica como Mock', async () => {
+  const s = setup();
+  s.config.KHIPU_PROVIDER = 'real';
+  s.seed({ status: 'PAID', khipuPaymentId: null });
+  await assert.rejects(s.service().createPayment(dto), status(409));
+  assert.equal(s.calls.posts.length, 0);
+});
+test('dos solicitudes API tras historial Mock: una reserva, sin segundo POST', async () => {
+  const s = setup();
+  s.config.KHIPU_PROVIDER = 'real';
+  s.seed({ status: 'PAID' });
+  const entered = deferred();
+  const release = deferred();
+  s.flags.onPost = async () => {
+    entered.resolve();
+    await release.promise;
+  };
+  const first = s.service().createPayment(dto);
+  await entered.promise;
+  try {
+    await assert.rejects(s.service().createPayment(dto), status(409));
+  } finally {
+    release.resolve();
+    await first;
+  }
+  assert.equal(s.calls.posts.length, 1);
 });

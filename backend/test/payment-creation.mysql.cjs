@@ -274,6 +274,91 @@ test(
             assert.equal(posts, 1);
           }),
       );
+      await t.test(
+        'cuatro Mock PAID sin envío permiten un cobro API conservando el historial',
+        () =>
+          fixture(async ({ id, document, dto }) => {
+            const oldIds = [];
+            for (let i = 0; i < 4; i++) {
+              const oldId = randomUUID();
+              oldIds.push(oldId);
+              await clients[0].payment.create({
+                data: {
+                  id: oldId,
+                  customerId: id,
+                  mode: 'TOTAL_DEBT',
+                  amount: 1000,
+                  currency: 'CLP',
+                  status: 'PAID',
+                  paidAt: new Date(),
+                  idempotencyKey: `fixture-${oldId}`,
+                  khipuPaymentId: `mock_${oldId}`,
+                  zohoSyncStatus: i === 0 ? 'DRY_RUN_READY' : 'NOT_SYNCED',
+                  documents: {
+                    create: { documentId: document.id, amount: 1000 },
+                  },
+                },
+              });
+            }
+            const before = await clients[0].payment.findMany({
+              where: { id: { in: oldIds } },
+              orderBy: { id: 'asc' },
+            });
+            let posts = 0;
+            const config = {
+              get: (key) =>
+                ({
+                  KHIPU_PROVIDER: 'real',
+                  ZOHO_WRITE_PAYMENTS_ENABLED: 'false',
+                  ZOHO_AUTO_SYNC_PAYMENTS_ENABLED: 'false',
+                  CORS_ALLOWED_ORIGINS: 'http://localhost:5173',
+                  PUBLIC_BACKEND_URL: 'http://localhost:3000',
+                })[key],
+            };
+            // Es un doble sin red: no usar credenciales ni crear un cobro externo.
+            const khipu = {
+              createPayment: async (params) => {
+                posts++;
+                return {
+                  paymentId: `api_fixture_${params.localPaymentId}`,
+                  paymentUrl: 'https://checkout.example.test',
+                  expiresAt: null,
+                };
+              },
+            };
+            const first = await new PaymentsService(
+              clients[0],
+              khipu,
+              config,
+              {},
+            ).createPayment(dto);
+            const second = await new PaymentsService(
+              clients[1],
+              khipu,
+              config,
+              {},
+            ).createPayment(dto);
+            assert.equal(first.reused, false);
+            assert.equal(second.reused, true);
+            assert.equal(first.payment.id, second.payment.id);
+            assert.equal(posts, 1);
+            const after = await clients[0].payment.findMany({
+              where: { id: { in: oldIds } },
+              orderBy: { id: 'asc' },
+            });
+            assert.deepEqual(after, before);
+            assert.equal(
+              await clients[0].payment.count({ where: { customerId: id } }),
+              5,
+            );
+            assert.equal(
+              await clients[0].paymentAttempt.count({
+                where: { customerId: id },
+              }),
+              1,
+            );
+          }),
+      );
     } finally {
       await Promise.all(clients.map((client) => client.$disconnect()));
       globalThis.fetch = originalFetch;
