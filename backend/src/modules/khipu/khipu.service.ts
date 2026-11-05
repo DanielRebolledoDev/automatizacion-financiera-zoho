@@ -122,12 +122,17 @@ export class KhipuService {
       `${baseUrl}/payments/${encodeURIComponent(khipuPaymentId)}`,
       {
         method: 'GET',
+        signal: AbortSignal.timeout(15_000),
         headers: {
           Accept: 'application/json',
           ...this.getKhipuAuthHeaders(),
         },
       },
-    );
+    ).catch(() => {
+      throw new ServiceUnavailableException(
+        'No fue posible consultar Khipu dentro del tiempo disponible. Vuelve a consultar el estado.',
+      );
+    });
 
     const data = (await response
       .json()

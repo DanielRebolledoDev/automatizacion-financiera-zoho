@@ -20,6 +20,11 @@ import {
   Stack,
   TextField,
   Typography,
+  Radio,
+  RadioGroup,
+  FormControlLabel,
+  FormControl,
+  FormLabel,
 } from "@mui/material";
 import { useState } from "react";
 import { Controller, useForm } from "react-hook-form";
@@ -32,11 +37,13 @@ import {
   type PaymentExpressRutFormValues,
 } from "../schemas/paymentExpress.schema";
 
+import { usePaymentExpressPayOverdue } from "../hooks/usePaymentExpressPayOverdue";
+
 const steps = [
   { title: "Consulta tu deuda", text: "Ingresa el RUT asociado a tu cuenta." },
   {
     title: "Revisa el monto",
-    text: "Confirma el total antes de continuar al pago.",
+    text: "Elige toda la deuda o solo las facturas vencidas.",
   },
   {
     title: "Realiza el pago",
@@ -47,8 +54,13 @@ const steps = [
 export function PaymentExpressPage() {
   const [lastConsultedRut, setLastConsultedRut] = useState<string | null>(null);
 
+  const [debtMode, setDebtMode] = useState<"total" | "overdue">("total");
+  const payOverdueMutation = usePaymentExpressPayOverdue();
+
   const summaryMutation = usePaymentExpressSummary();
   const payTotalMutation = usePaymentExpressPayTotal();
+  const paymentMutation =
+    debtMode === "overdue" ? payOverdueMutation : payTotalMutation;
 
   const {
     control,
@@ -63,6 +75,8 @@ export function PaymentExpressPage() {
 
   const onSubmit = (values: PaymentExpressRutFormValues) => {
     payTotalMutation.reset();
+    payOverdueMutation.reset();
+    setDebtMode("total");
 
     summaryMutation.mutate(
       {
@@ -88,23 +102,28 @@ export function PaymentExpressPage() {
       summaryMutation.reset();
     }
 
-    if (payTotalMutation.error) {
+    if (payTotalMutation.error || payOverdueMutation.error) {
       payTotalMutation.reset();
+      payOverdueMutation.reset();
     }
 
+    setDebtMode("total");
     setLastConsultedRut(null);
   };
 
   const handlePayTotal = () => {
     if (
-      !summaryMutation.data?.canPay ||
+      !(debtMode === "overdue"
+        ? summaryMutation.data?.canPayOverdue
+        : summaryMutation.data?.canPay) ||
       !lastConsultedRut ||
       summaryMutation.isPending ||
-      payTotalMutation.isPending
+      payTotalMutation.isPending ||
+      payOverdueMutation.isPending
     )
       return;
 
-    payTotalMutation.mutate(
+    paymentMutation.mutate(
       { rut: lastConsultedRut },
       {
         onSuccess: (response) => {
@@ -118,7 +137,10 @@ export function PaymentExpressPage() {
   };
 
   const summary = summaryMutation.data;
-  const isLoading = summaryMutation.isPending || payTotalMutation.isPending;
+  const isLoading =
+    summaryMutation.isPending ||
+    payTotalMutation.isPending ||
+    payOverdueMutation.isPending;
 
   return (
     <Box
@@ -198,8 +220,8 @@ export function PaymentExpressPage() {
                 color="text.secondary"
                 sx={{ mt: 2, lineHeight: 1.8, maxWidth: 420 }}
               >
-                Consulta tu deuda con tu RUT y paga el total en pocos pasos.
-                Revisa el monto y continúa cuando estés listo.
+                Consulta tu deuda con tu RUT y elige qué deuda pagar en pocos
+                pasos. Revisa el monto y continúa cuando estés listo.
               </Typography>
             </Box>
             <Stack
@@ -357,9 +379,9 @@ export function PaymentExpressPage() {
                     {summaryMutation.error.message}
                   </Alert>
                 )}
-                {payTotalMutation.isError && (
+                {paymentMutation.isError && (
                   <Alert severity="error">
-                    {payTotalMutation.error.message}
+                    {paymentMutation.error.message}
                   </Alert>
                 )}
 
@@ -375,6 +397,48 @@ export function PaymentExpressPage() {
                   ) : summary && !summaryMutation.isError ? (
                     <Stack spacing={2.5}>
                       <Divider />
+                      <FormControl disabled={isLoading}>
+                        <FormLabel id="debt-mode-label">
+                          ¿Qué deseas pagar?
+                        </FormLabel>
+                        <RadioGroup
+                          aria-labelledby="debt-mode-label"
+                          value={debtMode}
+                          onChange={(_, value) => {
+                            if (value !== "total" && value !== "overdue")
+                              return;
+                            setDebtMode(value);
+                            payTotalMutation.reset();
+                            payOverdueMutation.reset();
+                          }}
+                        >
+                          <FormControlLabel
+                            value="total"
+                            control={<Radio />}
+                            label={`Toda la deuda pendiente · ${formatCurrency(summary.totalDebt, summary.currency)}`}
+                          />
+                          <FormControlLabel
+                            value="overdue"
+                            control={<Radio />}
+                            disabled={!summary.canPayOverdue}
+                            label={`Solo deuda vencida · ${formatCurrency(summary.overdueDebt, summary.currency)}`}
+                          />
+                        </RadioGroup>
+                        <Typography variant="caption" color="text.secondary">
+                          La deuda total incluye las facturas vencidas y las que
+                          aún no vencen. Solo vencidas considera saldos con
+                          vencimiento anterior a hoy, según la fecha de Chile.
+                        </Typography>
+                        {!summary.canPayOverdue && (
+                          <Typography
+                            variant="body2"
+                            color="text.secondary"
+                            sx={{ mt: 1 }}
+                          >
+                            No tienes saldo vencido disponible para pagar.
+                          </Typography>
+                        )}
+                      </FormControl>
                       <Box
                         sx={{
                           p: { xs: 2.5, sm: 3 },
@@ -399,7 +463,9 @@ export function PaymentExpressPage() {
                           </Typography>
                         </Stack>
                         <Typography variant="body2" color="text.secondary">
-                          Deuda total consultada
+                          {debtMode === "overdue"
+                            ? "Deuda vencida seleccionada"
+                            : "Deuda total pendiente"}
                         </Typography>
                         <Typography
                           sx={{
@@ -411,7 +477,12 @@ export function PaymentExpressPage() {
                             mt: 0.5,
                           }}
                         >
-                          {formatCurrency(summary.totalDebt, summary.currency)}
+                          {formatCurrency(
+                            debtMode === "overdue"
+                              ? summary.overdueDebt
+                              : summary.totalDebt,
+                            summary.currency,
+                          )}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
                           Moneda: {summary.currency}
@@ -454,7 +525,9 @@ export function PaymentExpressPage() {
                   ) : null}
                 </Box>
 
-                {summary?.canPay &&
+                {(debtMode === "overdue"
+                  ? summary?.canPayOverdue
+                  : summary?.canPay) &&
                   !summaryMutation.isPending &&
                   !summaryMutation.isError && (
                     <Stack spacing={1.5}>
@@ -466,28 +539,30 @@ export function PaymentExpressPage() {
                         disabled={isLoading || !lastConsultedRut}
                         sx={{ minHeight: 52 }}
                         startIcon={
-                          payTotalMutation.isPending ? (
+                          paymentMutation.isPending ? (
                             <CircularProgress size={20} color="inherit" />
                           ) : (
                             <AccountBalanceWallet />
                           )
                         }
                         endIcon={
-                          !payTotalMutation.isPending ? (
+                          !paymentMutation.isPending ? (
                             <ArrowForward />
                           ) : undefined
                         }
                       >
-                        {payTotalMutation.isPending
+                        {paymentMutation.isPending
                           ? "Preparando tu pago..."
-                          : "Pagar deuda total"}
+                          : debtMode === "overdue"
+                            ? "Pagar solo deuda vencida"
+                            : "Pagar deuda total"}
                       </Button>
                       <Typography
                         variant="caption"
                         color="text.secondary"
                         sx={{ textAlign: "center", lineHeight: 1.6 }}
                       >
-                        {payTotalMutation.isPending
+                        {paymentMutation.isPending
                           ? "Espera mientras preparamos el acceso a la pasarela."
                           : "Al continuar, abrirás la pasarela para realizar el pago. Consultar tu deuda no genera un cobro."}
                       </Typography>

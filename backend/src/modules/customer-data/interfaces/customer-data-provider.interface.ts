@@ -1,6 +1,7 @@
 export interface PaymentExpressDebtSummary {
   customerId: string;
   totalDebt: number;
+  overdueDebt: number;
   currency: string;
   canPay: boolean;
 }

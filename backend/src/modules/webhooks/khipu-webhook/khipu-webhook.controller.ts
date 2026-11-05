@@ -127,7 +127,11 @@ export class KhipuWebhookController {
     }
 
     const amount = Number(confirmed.amount);
-    if (!Number.isFinite(amount) || amount <= 0 || amount !== payment.amount) {
+    if (
+      !Number.isSafeInteger(amount) ||
+      amount <= 0 ||
+      amount !== payment.amount
+    ) {
       throw new BadRequestException(
         'El monto confirmado por Khipu no coincide con el pago local.',
       );

@@ -5,6 +5,8 @@ export interface PaymentExpressSummaryRequest {
 export interface PaymentExpressSummaryResponse {
   message: string;
   totalDebt: number;
+  overdueDebt: number;
+  canPayOverdue: boolean;
   currency: string;
   canPay: boolean;
 }

@@ -1,3 +1,7 @@
+import {
+  getChileTodayDate,
+  isDebtOverdue,
+} from '../../../common/utils/debt-due-date.util';
 import { Injectable } from '@nestjs/common';
 import { CustomerStatus, DocumentStatus, DocumentType } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -33,6 +37,7 @@ export class ZohoCustomerDataProvider implements CustomerDataProvider {
     return {
       customerId: syncedCustomer.customerId,
       totalDebt: syncedCustomer.totalDebt,
+      overdueDebt: syncedCustomer.overdueDebt,
       currency: syncedCustomer.currency,
       canPay: syncedCustomer.totalDebt > 0,
     };
@@ -210,8 +215,19 @@ export class ZohoCustomerDataProvider implements CustomerDataProvider {
       };
     });
 
+    const today = getChileTodayDate();
+    const overdueDebt = zohoDebt.invoices.reduce(
+      (sum, invoice) =>
+        sum +
+        (isDebtOverdue(invoice.dueDate, today)
+          ? Math.round(invoice.balance)
+          : 0),
+      0,
+    );
+
     return {
       customerId: result.customerId,
+      overdueDebt,
       totalDebt: Math.round(zohoDebt.totalDebt),
       currency: zohoDebt.currency,
       staleDocumentsClosed: result.staleDocumentsClosed,

@@ -20,6 +20,12 @@ export const paymentExpressApi = {
       PaymentExpressPayTotalRequest
     >("/payment-express/pay-total", body),
 
+  payOverdue: (body: PaymentExpressPayTotalRequest) =>
+    httpClient.post<
+      PaymentExpressPayTotalResponse,
+      PaymentExpressPayTotalRequest
+    >("/payment-express/pay-overdue", body),
+
   getPaymentResult: (paymentId: string) =>
     httpClient.get<PaymentExpressResultResponse>(
       `/payment-express/result/${encodeURIComponent(paymentId)}`,

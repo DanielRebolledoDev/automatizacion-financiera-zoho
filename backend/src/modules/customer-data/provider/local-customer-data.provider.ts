@@ -1,3 +1,7 @@
+import {
+  getChileTodayDate,
+  isDebtOverdue,
+} from '../../../common/utils/debt-due-date.util';
 import { Injectable } from '@nestjs/common';
 import { DocumentStatus } from '@prisma/client';
 import { PrismaService } from '../../../prisma/prisma.service';
@@ -35,6 +39,7 @@ export class LocalCustomerDataProvider implements CustomerDataProvider {
           },
           select: {
             outstandingAmount: true,
+            dueDate: true,
             currency: true,
           },
         },
@@ -50,9 +55,20 @@ export class LocalCustomerDataProvider implements CustomerDataProvider {
       0,
     );
 
+    const today = getChileTodayDate();
+    const overdueDebt = customer.documents.reduce(
+      (sum, document) =>
+        sum +
+        (isDebtOverdue(document.dueDate, today)
+          ? document.outstandingAmount
+          : 0),
+      0,
+    );
+
     return {
       customerId: customer.id,
       totalDebt,
+      overdueDebt,
       currency: customer.documents[0]?.currency ?? 'CLP',
       canPay: totalDebt > 0,
     };

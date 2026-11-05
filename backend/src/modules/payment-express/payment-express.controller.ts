@@ -23,6 +23,11 @@ export class PaymentExpressController {
     return this.paymentExpressService.payTotal(paymentExpressRutDto);
   }
 
+  @Post('pay-overdue')
+  payOverdue(@Body() paymentExpressRutDto: PaymentExpressRutDto) {
+    return this.paymentExpressService.payOverdue(paymentExpressRutDto);
+  }
+
   @Get('result/:paymentId')
   getPaymentResult(@Param('paymentId', new ParseUUIDPipe()) paymentId: string) {
     return this.paymentExpressService.getPaymentResult(paymentId);

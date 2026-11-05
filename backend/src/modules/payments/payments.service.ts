@@ -1,3 +1,4 @@
+import { getChileTodayDate } from '../../common/utils/debt-due-date.util';
 import {
   BadRequestException,
   ConflictException,
@@ -492,7 +493,11 @@ export class PaymentsService {
       );
     }
 
-    if (payment.amount !== Math.round(params.amount)) {
+    if (
+      !Number.isSafeInteger(params.amount) ||
+      params.amount <= 0 ||
+      payment.amount !== params.amount
+    ) {
       throw new BadRequestException(
         'El monto informado por Khipu no coincide con el pago local.',
       );
@@ -714,18 +719,19 @@ export class PaymentsService {
         );
       }
 
-      if (
-        khipuPayment.transaction_id &&
-        khipuPayment.transaction_id !== payment.id
-      ) {
+      if (khipuPayment.transaction_id !== payment.id) {
         throw new BadRequestException(
           'El pago consultado en Khipu no corresponde al pago local.',
         );
       }
 
-      const khipuAmount = Math.round(Number(khipuPayment.amount));
+      const khipuAmount = Number(khipuPayment.amount);
 
-      if (!Number.isFinite(khipuAmount) || khipuAmount !== payment.amount) {
+      if (
+        !Number.isSafeInteger(khipuAmount) ||
+        khipuAmount <= 0 ||
+        khipuAmount !== payment.amount
+      ) {
         throw new BadRequestException(
           'El monto informado por Khipu no coincide con el pago local.',
         );
@@ -882,18 +888,19 @@ export class PaymentsService {
         );
       }
 
-      if (
-        khipuPayment.transaction_id &&
-        khipuPayment.transaction_id !== payment.id
-      ) {
+      if (khipuPayment.transaction_id !== payment.id) {
         throw new BadRequestException(
           'El pago consultado en Khipu no corresponde al pago local.',
         );
       }
 
-      const khipuAmount = Math.round(Number(khipuPayment.amount));
+      const khipuAmount = Number(khipuPayment.amount);
 
-      if (!Number.isFinite(khipuAmount) || khipuAmount !== payment.amount) {
+      if (
+        !Number.isSafeInteger(khipuAmount) ||
+        khipuAmount <= 0 ||
+        khipuAmount !== payment.amount
+      ) {
         throw new BadRequestException(
           'El monto informado por Khipu no coincide con el pago local.',
         );
@@ -1002,6 +1009,21 @@ export class PaymentsService {
       // El evento y el cambio de estado se guardan juntos.
       // Una solicitud repetida no vuelve a crear el evento.
       if (updateResult.count > 0) {
+        await tx.paymentAttempt.create({
+          data: {
+            paymentId: payment.id,
+            customerId: payment.customerId,
+            mode: payment.mode,
+            amount: payment.amount,
+            status: PaymentStatus.CANCELLED,
+            requestPayload: {
+              action: 'cancel-payment',
+              provider: isMock ? 'MOCK_KHIPU' : 'KHIPU_REAL',
+              paymentId: payment.id,
+            },
+            responsePayload: { status: PaymentStatus.CANCELLED },
+          },
+        });
         await tx.paymentEvent.create({
           data: {
             paymentId: payment.id,
@@ -1107,7 +1129,8 @@ export class PaymentsService {
       return tx.customerDocument.findMany({
         where: {
           customerId: createPaymentDto.customerId,
-          status: DocumentStatus.OVERDUE,
+          status: { in: payableStatuses },
+          dueDate: { lt: getChileTodayDate() },
           outstandingAmount: {
             gt: 0,
           },

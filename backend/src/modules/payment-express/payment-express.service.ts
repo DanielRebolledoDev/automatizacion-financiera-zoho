@@ -38,12 +38,25 @@ export class PaymentExpressService {
     return {
       message: 'Resumen de deuda express obtenido correctamente.',
       totalDebt: summary.totalDebt,
+      overdueDebt: summary.overdueDebt,
+      canPayOverdue: summary.overdueDebt > 0,
       currency: summary.currency,
       canPay: summary.canPay,
     };
   }
 
   async payTotal(paymentExpressRutDto: PaymentExpressRutDto) {
+    return this.payDebt(paymentExpressRutDto, PaymentMode.TOTAL_DEBT);
+  }
+
+  async payOverdue(paymentExpressRutDto: PaymentExpressRutDto) {
+    return this.payDebt(paymentExpressRutDto, PaymentMode.OVERDUE_DEBT);
+  }
+
+  private async payDebt(
+    paymentExpressRutDto: PaymentExpressRutDto,
+    mode: typeof PaymentMode.TOTAL_DEBT | typeof PaymentMode.OVERDUE_DEBT,
+  ) {
     const normalizedRut = this.validateAndNormalizeRut(
       paymentExpressRutDto.rut,
     );
@@ -65,18 +78,24 @@ export class PaymentExpressService {
       );
     }
 
-    if (!summary.canPay || summary.totalDebt <= 0) {
+    const amount =
+      mode === PaymentMode.OVERDUE_DEBT
+        ? summary.overdueDebt
+        : summary.totalDebt;
+    if (!summary.canPay || !Number.isSafeInteger(amount) || amount <= 0) {
       throw new BadRequestException(
-        'El cliente no posee deuda pendiente para pagar.',
+        mode === PaymentMode.OVERDUE_DEBT
+          ? 'El cliente no posee deuda vencida para pagar.'
+          : 'El cliente no posee deuda pendiente para pagar.',
       );
     }
 
-    const expectedAmount = Math.round(summary.totalDebt);
+    const expectedAmount = amount;
 
     const paymentResult = await this.paymentsService.createPayment(
       {
         customerId: summary.customerId,
-        mode: PaymentMode.TOTAL_DEBT,
+        mode,
       },
       {
         expectedAmount,
