@@ -48,6 +48,7 @@ export class ZohoCustomerPaymentsService {
       where: {
         id: payment.id,
         status: PaymentStatus.PAID,
+        confirmationReviewRequired: false,
         updatedAt: payment.updatedAt,
         zohoCustomerPaymentId: null,
         zohoSyncAttemptId: null,
@@ -105,6 +106,7 @@ export class ZohoCustomerPaymentsService {
       where: {
         id: payment.id,
         status: PaymentStatus.PAID,
+        confirmationReviewRequired: false,
         updatedAt: payment.updatedAt,
         zohoCustomerPaymentId: null,
         zohoSyncAttemptId: null,
@@ -223,7 +225,21 @@ export class ZohoCustomerPaymentsService {
     }
   }
 
-  async reconcileCustomerPayment(paymentId: string) {
+  async reconcileCustomerPayment(
+    paymentId: string,
+    inspection?: { operator: string; ticket: string },
+  ) {
+    if (
+      inspection &&
+      (typeof inspection.operator !== 'string' ||
+        typeof inspection.ticket !== 'string' ||
+        !/^[A-Za-z0-9_.@-]{3,80}$/.test(inspection.operator) ||
+        !/^[A-Za-z0-9_.-]{3,80}$/.test(inspection.ticket))
+    ) {
+      throw new BadRequestException(
+        'La inspección requiere operador y referencia de incidente.',
+      );
+    }
     const payment = await this.prisma.payment.findUnique({
       where: { id: paymentId },
     });
@@ -267,7 +283,7 @@ export class ZohoCustomerPaymentsService {
         'El pago es Mock. No se consultó ni se escribió en Zoho.',
       );
     }
-    if (payment.zohoSyncStatus === ZohoSyncStatus.SENDING) {
+    if (payment.zohoSyncStatus === ZohoSyncStatus.SENDING && !inspection) {
       return report(
         'SENDING_REQUIRES_INSPECTION',
         'La reserva sigue SENDING: puede haber una solicitud activa o interrumpida. No se cambia ni se libera automáticamente.',
@@ -279,7 +295,10 @@ export class ZohoCustomerPaymentsService {
         'Es un fallo anterior al registro persistente de intentos. Requiere revisión individual.',
       );
     }
-    if (payment.zohoSyncStatus !== ZohoSyncStatus.REVIEW_REQUIRED) {
+    if (
+      payment.zohoSyncStatus !== ZohoSyncStatus.REVIEW_REQUIRED &&
+      !(inspection && payment.zohoSyncStatus === ZohoSyncStatus.SENDING)
+    ) {
       return report(
         'NO_UNCERTAIN_ATTEMPT',
         'No hay un envío incierto registrado para conciliar.',
@@ -432,8 +451,9 @@ export class ZohoCustomerPaymentsService {
         where: {
           id: payment.id,
           status: PaymentStatus.PAID,
+          confirmationReviewRequired: false,
           updatedAt: payment.updatedAt,
-          zohoSyncStatus: ZohoSyncStatus.REVIEW_REQUIRED,
+          zohoSyncStatus: payment.zohoSyncStatus,
           zohoSyncAttemptId: payment.zohoSyncAttemptId,
           zohoSyncOrganizationId: organizationId,
           zohoCustomerPaymentId: null,
@@ -461,6 +481,13 @@ export class ZohoCustomerPaymentsService {
             attemptId: payment.zohoSyncAttemptId,
             organizationId,
             zohoCustomerPaymentId: remoteId,
+            ...(inspection
+              ? {
+                  operator: inspection.operator,
+                  ticket: inspection.ticket,
+                  previousSyncStatus: payment.zohoSyncStatus,
+                }
+              : {}),
             matchedBy:
               'customer-reference-amount-currency-date-description-invoices',
           },
@@ -527,6 +554,12 @@ export class ZohoCustomerPaymentsService {
 
     if (!payment) {
       throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    if (payment.confirmationReviewRequired) {
+      throw new ConflictException(
+        'La confirmación del pago requiere revisión antes de sincronizar con Zoho.',
+      );
     }
 
     if (

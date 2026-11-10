@@ -124,6 +124,8 @@ model Payment {
   khipuPaymentId        String?        @unique @map("khipu_payment_id") @db.VarChar(100)
   khipuPaymentUrl       String?        @map("khipu_payment_url") @db.Text
   expiresAt             DateTime?      @map("expires_at")
+  confirmationReviewRequired Boolean @default(false)
+  confirmationReviewReason String? @db.VarChar(100)
   paidAt                DateTime?      @map("paid_at")
   zohoCustomerPaymentId String?        @unique @db.VarChar(100)
   zohoSyncedAt          DateTime?

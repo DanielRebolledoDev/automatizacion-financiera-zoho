@@ -371,3 +371,47 @@ for (const [org, outcome] of [
     await expectBlocked(f, outcome, 0);
   });
 }
+
+// Inspeccion administrativa: puede reconocer un envio confirmado, nunca repetirlo.
+test('SENDING con inspeccion explicita concilia coincidencia completa sin POST', async () => {
+  const f = fixture();
+  f.payment.zohoSyncStatus = 'SENDING';
+  const result = await f.service.reconcileCustomerPayment(f.id, {
+    operator: 'tester',
+    ticket: 'TEST-001',
+  });
+  assert.equal(result.reconciled, true);
+  assert.equal(f.calls.posts, 0);
+  assert.equal(f.calls.updates[0].where.zohoSyncStatus, 'SENDING');
+  assert.equal(f.calls.events[0].data.payload.ticket, 'TEST-001');
+});
+test('SENDING sin coincidencia conserva reserva', async () => {
+  const f = fixture();
+  f.payment.zohoSyncStatus = 'SENDING';
+  f.setList({
+    code: 0,
+    customerpayments: [],
+    page_context: { has_more_page: false },
+  });
+  const result = await f.service.reconcileCustomerPayment(f.id, {
+    operator: 'tester',
+    ticket: 'TEST-002',
+  });
+  assert.equal(result.reconciled, false);
+  assert.equal(f.payment.zohoSyncStatus, 'SENDING');
+  assert.equal(f.calls.posts, 0);
+  assert.equal(f.calls.updates.length, 0);
+});
+test('SENDING inspeccion no sobrescribe cambio concurrente', async () => {
+  const f = fixture();
+  f.payment.zohoSyncStatus = 'SENDING';
+  f.options.count = 0;
+  await assert.rejects(
+    f.service.reconcileCustomerPayment(f.id, {
+      operator: 'tester',
+      ticket: 'TEST-003',
+    }),
+  );
+  assert.equal(f.calls.posts, 0);
+  assert.equal(f.calls.events.length, 0);
+});

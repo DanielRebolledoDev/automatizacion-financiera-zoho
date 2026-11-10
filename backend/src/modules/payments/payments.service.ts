@@ -245,7 +245,9 @@ export class PaymentsService {
         mode: payment.mode,
         amount: payment.amount,
         currency: payment.currency,
-        status: payment.status,
+        status: payment.confirmationReviewRequired
+          ? 'REVIEW_REQUIRED'
+          : payment.status,
         khipuPaymentId: payment.khipuPaymentId,
         khipuPaymentUrl: payment.khipuPaymentUrl,
         expiresAt: payment.expiresAt,
@@ -304,6 +306,12 @@ export class PaymentsService {
       throw new NotFoundException('No se encontró el pago solicitado.');
     }
 
+    if (payment.confirmationReviewRequired) {
+      throw new ConflictException(
+        'La confirmación de este pago requiere revisión.',
+      );
+    }
+
     if (!payment.khipuPaymentId?.startsWith('mock_')) {
       throw new ForbiddenException(
         'La confirmación Mock no puede aplicarse a un cobro real o sin proveedor.',
@@ -336,9 +344,11 @@ export class PaymentsService {
     let alreadyProcessed = false;
 
     const updatedPayment = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${payment.customerId} FOR UPDATE`;
       const confirmation = await tx.payment.updateMany({
         where: {
           id: payment.id,
+          confirmationReviewRequired: false,
           status: {
             in: [
               PaymentStatus.CREATED,
@@ -509,22 +519,23 @@ export class PaymentsService {
       );
     }
 
+    if (
+      payment.confirmationReviewRequired ||
+      [
+        PaymentStatus.CANCELLED,
+        PaymentStatus.EXPIRED,
+        PaymentStatus.FAILED,
+      ].some((status) => status === payment.status)
+    ) {
+      return this.processLateKhipuConfirmation(params, payment.customerId);
+    }
+
     if (payment.status === PaymentStatus.PAID) {
       return {
         message: 'El pago ya se encontraba marcado como pagado.',
         alreadyProcessed: true,
         payment: this.mapPaymentResponse(payment),
       };
-    }
-
-    if (
-      payment.status === PaymentStatus.CANCELLED ||
-      payment.status === PaymentStatus.FAILED ||
-      payment.status === PaymentStatus.EXPIRED
-    ) {
-      throw new BadRequestException(
-        'No se puede marcar como pagado un pago cancelado, fallido o expirado.',
-      );
     }
 
     const now = new Date();
@@ -539,9 +550,11 @@ export class PaymentsService {
     let alreadyProcessed = false;
 
     const updatedPayment = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM customers WHERE id = ${payment.customerId} FOR UPDATE`;
       const confirmation = await tx.payment.updateMany({
         where: {
           id: payment.id,
+          confirmationReviewRequired: false,
           status: {
             in: [
               PaymentStatus.CREATED,
@@ -651,6 +664,233 @@ export class PaymentsService {
     };
   }
 
+  private async processLateKhipuConfirmation(
+    params: {
+      localPaymentId: string;
+      khipuPaymentId: string;
+      amount: number;
+      currency: string;
+      payload: KhipuWebhookPayload;
+    },
+    customerId: string,
+  ) {
+    // Solo admite la respuesta autenticada done, nunca el cuerpo recibido solo.
+    if (
+      params.khipuPaymentId.startsWith('mock_') ||
+      params.payload.status !== 'done' ||
+      params.payload.payment_id !== params.khipuPaymentId ||
+      params.payload.transaction_id !== params.localPaymentId ||
+      Number(params.payload.amount) !== params.amount ||
+      params.payload.currency !== params.currency
+    ) {
+      throw new BadRequestException(
+        'La confirmación tardía no contiene una respuesta válida de Khipu.',
+      );
+    }
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM customers WHERE id = ${customerId} FOR UPDATE`;
+        await tx.$queryRaw`SELECT id FROM payments WHERE id = ${params.localPaymentId} FOR UPDATE`;
+        const payment = await tx.payment.findUniqueOrThrow({
+          where: { id: params.localPaymentId },
+          include: { documents: { include: { document: true } } },
+        });
+        if (
+          payment.customerId !== customerId ||
+          payment.khipuPaymentId !== params.khipuPaymentId ||
+          payment.amount !== params.amount ||
+          payment.currency !== params.currency
+        ) {
+          throw new ConflictException(
+            'El pago cambió durante la confirmación.',
+          );
+        }
+        if (
+          payment.status === PaymentStatus.PAID &&
+          !payment.confirmationReviewRequired
+        ) {
+          return { payment, alreadyProcessed: true, autoSync: false };
+        }
+        const documentIds = payment.documents.map((item) => item.documentId);
+        const others = documentIds.length
+          ? await tx.payment.findMany({
+              where: {
+                id: { not: payment.id },
+                customerId,
+                OR: [
+                  {
+                    status: {
+                      in: [...ACTIVE_PAYMENT_STATUSES, PaymentStatus.PAID],
+                    },
+                  },
+                  { confirmationReviewRequired: true },
+                ],
+                documents: { some: { documentId: { in: documentIds } } },
+              },
+              select: { id: true },
+            })
+          : [];
+        const payable = [
+          DocumentStatus.PENDING,
+          DocumentStatus.OVERDUE,
+          DocumentStatus.PARTIALLY_PAID,
+        ];
+        const documentsMatch =
+          documentIds.length > 0 &&
+          new Set(documentIds).size === documentIds.length &&
+          payment.documents.reduce((sum, item) => sum + item.amount, 0) ===
+            payment.amount &&
+          payment.documents.every(
+            (item) =>
+              Number.isSafeInteger(item.amount) &&
+              item.amount > 0 &&
+              item.document.customerId === customerId &&
+              item.document.currency === payment.currency &&
+              item.document.outstandingAmount === item.amount &&
+              payable.some((status) => status === item.document.status),
+          );
+        const hasSyncEvidence =
+          payment.zohoSyncStatus !== 'NOT_SYNCED' ||
+          payment.zohoCustomerPaymentId !== null ||
+          payment.zohoSyncRemotePaymentId !== null ||
+          payment.zohoSyncAttemptId !== null ||
+          payment.zohoSyncedAt !== null ||
+          payment.zohoSyncStartedAt !== null ||
+          payment.zohoSyncOrganizationId !== null ||
+          payment.zohoSyncPayload !== null ||
+          payment.zohoSyncError !== null;
+        const reason = payment.confirmationReviewRequired
+          ? (payment.confirmationReviewReason ?? 'PREVIOUS_REVIEW')
+          : others.length
+            ? 'OVERLAPPING_PAYMENT'
+            : hasSyncEvidence
+              ? 'PREVIOUS_ZOHO_ATTEMPT'
+              : !documentsMatch
+                ? 'DOCUMENT_BALANCE_CHANGED'
+                : null;
+        const evidence = {
+          paymentId: payment.id,
+          khipuPaymentId: params.khipuPaymentId,
+          previousStatus: payment.status,
+          amount: params.amount,
+          currency: params.currency,
+          khipuStatus: 'done',
+          reason,
+          conflictingPaymentIds: others.map((item) => item.id),
+          conciliationDate: params.payload.conciliation_date ?? null,
+        };
+        const now = new Date();
+        if (reason) {
+          const externalEventId = `khipu-review-${params.khipuPaymentId}`;
+          const previous = await tx.paymentEvent.findUnique({
+            where: { externalEventId },
+          });
+          await tx.payment.updateMany({
+            where: {
+              id: { in: [payment.id, ...others.map((item) => item.id)] },
+            },
+            data: {
+              confirmationReviewRequired: true,
+              confirmationReviewReason: reason,
+            },
+          });
+          await tx.paymentEvent.upsert({
+            where: { externalEventId },
+            update: {},
+            create: {
+              paymentId: payment.id,
+              eventSource: EventSource.KHIPU,
+              eventType: 'payment.confirmation.review_required',
+              externalEventId,
+              payload: evidence,
+              processed: false,
+            },
+          });
+          const updated = await tx.payment.findUniqueOrThrow({
+            where: { id: payment.id },
+            include: { documents: { include: { document: true } } },
+          });
+          return {
+            payment: updated,
+            alreadyProcessed: Boolean(previous),
+            autoSync: false,
+          };
+        }
+        for (const item of payment.documents) {
+          const updated = await tx.customerDocument.updateMany({
+            where: {
+              id: item.documentId,
+              customerId,
+              currency: payment.currency,
+              outstandingAmount: item.amount,
+              status: { in: payable },
+            },
+            data: { outstandingAmount: 0, status: DocumentStatus.PAID },
+          });
+          if (updated.count !== 1)
+            throw new ConflictException(
+              'El saldo cambió durante la confirmación; vuelve a consultar.',
+            );
+        }
+        const updated = await tx.payment.update({
+          where: { id: payment.id },
+          data: { status: PaymentStatus.PAID, paidAt: now },
+          include: { documents: { include: { document: true } } },
+        });
+        await tx.paymentEvent.create({
+          data: {
+            paymentId: payment.id,
+            eventSource: EventSource.KHIPU,
+            eventType: 'payment.paid.real',
+            externalEventId: `khipu-paid-${params.khipuPaymentId}`,
+            payload: { ...evidence, recoveredLate: true },
+            processed: true,
+            processedAt: now,
+          },
+        });
+        await tx.paymentAttempt.create({
+          data: {
+            paymentId: payment.id,
+            customerId,
+            mode: payment.mode,
+            amount: payment.amount,
+            status: PaymentStatus.PAID,
+            requestPayload: {
+              action: 'late-confirmation',
+              previousStatus: payment.status,
+            },
+            responsePayload: {
+              khipuPaymentId: params.khipuPaymentId,
+              status: 'done',
+            },
+          },
+        });
+        return { payment: updated, alreadyProcessed: false, autoSync: true };
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+        maxWait: 5000,
+        timeout: 10000,
+      },
+    );
+    const zohoSync = result.autoSync
+      ? await this.tryAutoSyncPaidPaymentWithZoho(params.localPaymentId)
+      : {
+          attempted: false,
+          sentToZoho: false,
+          message:
+            'No se repite ni se inicia sincronización de un pago en revisión.',
+        };
+    return {
+      message: result.payment.confirmationReviewRequired
+        ? 'Confirmación registrada; requiere revisión antes de aplicar el pago.'
+        : 'Confirmación tardía procesada correctamente.',
+      alreadyProcessed: result.alreadyProcessed,
+      payment: this.mapPaymentResponse(result.payment),
+      zohoSync,
+    };
+  }
+
   async refreshPaymentStatusFromKhipu(paymentId: string) {
     const readPayment = () =>
       this.prisma.payment.findUnique({
@@ -673,6 +913,12 @@ export class PaymentsService {
     const isActive = ACTIVE_PAYMENT_STATUSES.some(
       (status) => status === payment.status,
     );
+
+    if (payment.confirmationReviewRequired) {
+      throw new ConflictException(
+        'El pago requiere revisión. No se puede cancelar ni actualizar automáticamente.',
+      );
+    }
 
     if (!isActive) {
       return {
@@ -801,6 +1047,7 @@ export class PaymentsService {
         id: payment.id,
         status: payment.status,
         updatedAt: payment.updatedAt,
+        confirmationReviewRequired: false,
       },
       data: {
         status: nextStatus,
@@ -843,6 +1090,12 @@ export class PaymentsService {
 
     if (!payment) {
       throw new NotFoundException('No se encontró el pago solicitado.');
+    }
+
+    if (payment.confirmationReviewRequired) {
+      throw new ConflictException(
+        'El pago requiere revisión. No se puede cancelar ni actualizar automáticamente.',
+      );
     }
 
     if (payment.status === PaymentStatus.CANCELLED) {
@@ -997,6 +1250,7 @@ export class PaymentsService {
       const updateResult = await tx.payment.updateMany({
         where: {
           id: payment.id,
+          confirmationReviewRequired: false,
           status: {
             in: [PaymentStatus.CREATED, PaymentStatus.PENDING],
           },
@@ -1291,13 +1545,21 @@ export class PaymentsService {
     const candidates = await tx.payment.findMany({
       where: {
         customerId: params.customerId,
-        status: { in: [...ACTIVE_PAYMENT_STATUSES, PaymentStatus.PAID] },
+        OR: [
+          { status: { in: [...ACTIVE_PAYMENT_STATUSES, PaymentStatus.PAID] } },
+          { confirmationReviewRequired: true },
+        ],
         documents: { some: { documentId: { in: params.documentIds } } },
       },
       include: { documents: { include: { document: true } } },
     });
     const active: typeof candidates = [];
     for (const payment of candidates) {
+      if (payment.confirmationReviewRequired) {
+        throw new ConflictException(
+          'Una factura tiene un pago en revisión. Contacta a la empresa antes de volver a pagar.',
+        );
+      }
       if (payment.status === PaymentStatus.PAID) {
         // Las pruebas Mock no representan un pago bancario. Para pasar a la
         // API durante la demostración, no bloquean si no existe evidencia de
@@ -1402,7 +1664,9 @@ export class PaymentsService {
       mode: payment.mode,
       amount: payment.amount,
       currency: payment.currency,
-      status: payment.status,
+      status: payment.confirmationReviewRequired
+        ? 'REVIEW_REQUIRED'
+        : payment.status,
       khipuPaymentId: payment.khipuPaymentId,
       khipuPaymentUrl: payment.khipuPaymentUrl,
       expiresAt: payment.expiresAt,

@@ -98,7 +98,10 @@ function setup() {
           .filter(
             (p) =>
               p.customerId === where.customerId &&
-              where.status.in.includes(p.status) &&
+              (where.OR
+                ? where.OR[0].status.in.includes(p.status) ||
+                  p.confirmationReviewRequired === true
+                : where.status.in.includes(p.status)) &&
               p.documentIds.some((id) =>
                 where.documents.some.documentId.in.includes(id),
               ),

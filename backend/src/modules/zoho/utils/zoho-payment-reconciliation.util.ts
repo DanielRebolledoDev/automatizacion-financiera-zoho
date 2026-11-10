@@ -82,15 +82,30 @@ export function compareZohoPayment(
   if (remote.date !== stored.date) differences.push('Fecha distinta.');
   if (remote.description !== stored.description)
     differences.push('Descripción de origen distinta.');
-  if (remote.status !== 'success')
-    differences.push('Estado remoto distinto de success.');
-  // Exigir un valor explícito: no interpretar un campo ausente como devolución cero.
+  // Dos formatos conocidos: el documentado y el observado en GET de Books.
+  // Si ambos aparecen, deben ser compatibles. null no equivale a ausente.
+  const has = (key: string) => Object.keys(remote).includes(key);
+  const zeroRefund =
+    (typeof remote.amount_refunded === 'number' ||
+      typeof remote.amount_refunded === 'string') &&
+    /^0(?:\.0+)?$/.test(String(remote.amount_refunded));
+  const emptyRefunds =
+    Array.isArray(remote.payment_refunds) &&
+    remote.payment_refunds.length === 0;
+  const legacyShape = remote.status === 'success' && zeroRefund;
+  const booksShape = remote.payment_status === 'paid' && emptyRefunds;
+
   if (
-    (typeof remote.amount_refunded !== 'number' &&
-      typeof remote.amount_refunded !== 'string') ||
-    !/^0(?:\.0+)?$/.test(String(remote.amount_refunded))
+    (!legacyShape && !booksShape) ||
+    (has('status') && remote.status !== 'success') ||
+    (has('payment_status') && remote.payment_status !== 'paid') ||
+    (has('amount_refunded') && !zeroRefund) ||
+    (has('payment_refunds') && !emptyRefunds) ||
+    (has('settlement_status') && remote.settlement_status !== '')
   )
-    differences.push('Devolución no nula o información de devolución ausente.');
+    differences.push(
+      'Estado o evidencia de devoluciones ausente, incompatible o no reconocida.',
+    );
 
   const expectedInvoices = invoiceMap(stored.invoices);
   const actualInvoices = invoiceMap(remote.invoices);

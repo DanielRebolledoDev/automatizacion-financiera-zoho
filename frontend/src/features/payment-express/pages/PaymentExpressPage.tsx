@@ -39,6 +39,8 @@ import {
 
 import { usePaymentExpressPayOverdue } from "../hooks/usePaymentExpressPayOverdue";
 
+import logoCorporativo from "../../../assets/logo-cls.png";
+
 const steps = [
   { title: "Consulta tu deuda", text: "Ingresa el RUT asociado a tu cuenta." },
   {
@@ -146,7 +148,7 @@ export function PaymentExpressPage() {
     <Box
       component="main"
       sx={{
-        minHeight: "100vh",
+        minHeight: 0,
         py: { xs: 3, md: 7 },
         background:
           "linear-gradient(135deg, #F4F7FA 0%, #E8EEF5 45%, #F7FAFC 100%)",
@@ -164,12 +166,22 @@ export function PaymentExpressPage() {
               placeItems: "center",
               width: 44,
               height: 44,
-              bgcolor: "primary.main",
+              //bgcolor: "primary.main",
               color: "white",
               borderRadius: "14px",
             }}
           >
-            <AccountBalanceWallet aria-hidden="true" />
+            <Box
+              component="img"
+              src={logoCorporativo}
+              alt=""
+              aria-hidden="true"
+              sx={{
+                width: "100%",
+                height: "100%",
+                objectFit: "contain",
+              }}
+            />
           </Box>
           <Box>
             <Typography sx={{ fontWeight: 700, color: "primary.main" }}>

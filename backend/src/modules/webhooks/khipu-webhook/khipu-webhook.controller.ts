@@ -167,7 +167,8 @@ export class KhipuWebhookController {
 
     return {
       received: true,
-      processed: true,
+      processed: processed.payment.status === 'PAID',
+      reviewRequired: processed.payment.status === 'REVIEW_REQUIRED',
       alreadyProcessed: processed.alreadyProcessed,
       paymentId,
     };

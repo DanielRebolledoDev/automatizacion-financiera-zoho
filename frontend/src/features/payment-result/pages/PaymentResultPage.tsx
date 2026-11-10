@@ -40,6 +40,18 @@ import {
 } from "../hooks/usePaymentExpressResult";
 
 function getStatusContent(status: string) {
+  if (status === "REVIEW_REQUIRED") {
+    return {
+      icon: <HourglassEmpty color="warning" sx={{ fontSize: 64 }} />,
+      chipColor: "warning" as const,
+      chipLabel: "Pago en revisión",
+      title: "Estamos revisando la confirmación",
+      description:
+        "No realices otro pago por estas facturas. Contacta a la empresa e indica el ID de pago para revisar el resultado.",
+      alertSeverity: "warning" as const,
+    };
+  }
+
   if (status === "PAID") {
     return {
       icon: <CheckCircleOutlined color="success" sx={{ fontSize: 64 }} />,

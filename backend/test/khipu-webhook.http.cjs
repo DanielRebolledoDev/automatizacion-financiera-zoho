@@ -61,7 +61,7 @@ check(
           counts.confirmations++;
           payment.status = 'PAID';
         }
-        return { alreadyProcessed };
+        return { alreadyProcessed, payment: { status: payment.status } };
       },
     };
     class WebhookTestModule {}
