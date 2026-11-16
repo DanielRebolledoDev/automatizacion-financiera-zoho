@@ -693,6 +693,21 @@ export class ZohoCustomerPaymentsService {
   }
 
   private assertCustomerIsAllowedForZohoWrite(rutNormalized: string): void {
+    // Apertura explícita: la ausencia conserva el comportamiento de lista previa.
+    // Vacío, '*' u otro valor no significan permitir todos.
+    const mode =
+      this.configService.get<string>('ZOHO_PAYMENT_RUT_MODE')?.trim() ??
+      'allowlist';
+
+    if (mode === 'all') {
+      return;
+    }
+    if (mode !== 'allowlist') {
+      throw new BadRequestException(
+        'ZOHO_PAYMENT_RUT_MODE debe ser all o allowlist. No se envió el pago a Zoho.',
+      );
+    }
+
     const rawAllowedRuts =
       this.configService.get<string>('ZOHO_PAYMENT_ALLOWED_RUTS')?.trim() ?? '';
 
