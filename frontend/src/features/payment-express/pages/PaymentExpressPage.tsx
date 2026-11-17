@@ -232,8 +232,8 @@ export function PaymentExpressPage() {
                 color="text.secondary"
                 sx={{ mt: 2, lineHeight: 1.8, maxWidth: 420 }}
               >
-                Consulta tu deuda con tu RUT y elige qué deuda pagar en pocos
-                pasos. Revisa el monto y continúa cuando estés listo.
+                Consulta tu deuda con tu RUT de cliente y elige qué deuda pagar
+                en pocos pasos. Revisa el monto y continúa cuando estés listo.
               </Typography>
             </Box>
             <Stack
@@ -332,7 +332,7 @@ export function PaymentExpressPage() {
                       color="text.secondary"
                       sx={{ mt: 0.5 }}
                     >
-                      Comienza ingresando tu RUT.
+                      Comienza ingresando tu RUT de cliente.
                     </Typography>
                   </Box>
                 </Stack>
@@ -531,7 +531,7 @@ export function PaymentExpressPage() {
                         sx={{ textAlign: "center", lineHeight: 1.7 }}
                       >
                         Aquí aparecerá el monto disponible para pago una vez que
-                        consultes tu RUT.
+                        consultes tu RUT de cliente.
                       </Typography>
                     </Box>
                   ) : null}
