@@ -1,3 +1,4 @@
+import { readZohoPaymentAccountId } from '../common/utils/zoho-payment-account.util';
 import { plainToInstance } from 'class-transformer';
 import {
   IsEnum,
@@ -80,6 +81,10 @@ class EnvironmentVariables {
 
   @IsOptional()
   @IsString()
+  ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID?: string;
+
+  @IsOptional()
+  @IsString()
   ZOHO_WRITE_PAYMENTS_ENABLED?: string;
 
   @IsOptional()
@@ -108,6 +113,15 @@ class EnvironmentVariables {
 }
 
 export function validate(config: Record<string, unknown>) {
+  const accountValue = config.ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID;
+  const accountId = readZohoPaymentAccountId(accountValue);
+  const writesEnabled = config.ZOHO_WRITE_PAYMENTS_ENABLED === 'true';
+  const hasAccountValue = accountValue !== undefined && accountValue !== '';
+  if ((writesEnabled || hasAccountValue) && !accountId) {
+    throw new Error(
+      'Configura ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID con el ID interno de la cuenta de Zoho, como texto numérico. Es obligatorio con escritura activada.',
+    );
+  }
   const validatedConfig = plainToInstance(EnvironmentVariables, config, {
     enableImplicitConversion: true,
   });

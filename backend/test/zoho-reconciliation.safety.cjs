@@ -131,7 +131,11 @@ function fixture() {
   // true únicamente en este doble de configuración en memoria:
   // permite verificar que ni siquiera así se reenvíe un intento incierto.
   const config = {
-    get: (key) => (key === 'ZOHO_WRITE_PAYMENTS_ENABLED' ? 'true' : undefined),
+    get: (key) =>
+      ({
+        ZOHO_WRITE_PAYMENTS_ENABLED: 'true',
+        ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID: '4031824000088888888',
+      })[key],
   };
   const service = new ZohoCustomerPaymentsService(prisma, config, books);
   return {
@@ -414,4 +418,35 @@ test('SENDING inspeccion no sobrescribe cambio concurrente', async () => {
   );
   assert.equal(f.calls.posts, 0);
   assert.equal(f.calls.events.length, 0);
+});
+
+test('cuenta: concilia con cuenta guardada aunque env tenga otra', async () => {
+  const f = fixture();
+  f.payment.zohoSyncPayload.account_id = '4031824000099999999';
+  f.remote.account_id = '4031824000099999999';
+  const result = await f.service.reconcileCustomerPayment(f.id);
+  assert.equal(result.reconciled, true);
+  assert.equal(f.calls.posts, 0);
+});
+for (const value of [undefined, null, '4031824000088888888', 123]) {
+  test(`conciliación: cuenta remota incompatible ${JSON.stringify(value)}`, async () => {
+    const f = fixture();
+    f.payment.zohoSyncPayload.account_id = '4031824000099999999';
+    f.remote.account_id = value;
+    await expectBlocked(f, 'DATA_MISMATCH', 2);
+  });
+}
+for (const value of [undefined, null, '', 'abc', 123, ' 123 ']) {
+  test(`conciliación: cuenta guardada inválida ${JSON.stringify(value)}`, async () => {
+    const f = fixture();
+    f.payment.zohoSyncPayload.account_id = value;
+    await expectBlocked(f, 'INVALID_SNAPSHOT', 0);
+  });
+}
+test('histórico sin cuenta: no inventa una a partir del env actual', async () => {
+  const f = fixture();
+  assert.equal(Object.hasOwn(f.payment.zohoSyncPayload, 'account_id'), false);
+  const result = await f.service.reconcileCustomerPayment(f.id);
+  assert.equal(result.reconciled, true);
+  assert.equal(Object.hasOwn(f.payment.zohoSyncPayload, 'account_id'), false);
 });

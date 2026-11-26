@@ -32,6 +32,7 @@ export interface PaymentExpressPayTotalResponse {
 
 export interface PaymentExpressResultPayment {
   id: string;
+  khipuPaymentId?: string | null;
   amount: number;
   currency: string;
   status: string;

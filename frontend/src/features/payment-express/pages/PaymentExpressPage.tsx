@@ -96,7 +96,9 @@ export function PaymentExpressPage() {
     value: string,
     onChange: (value: string) => void,
   ) => {
-    const formattedRut = formatRutInput(value);
+    const formattedRut = formatRutInput(
+      value.replace(/[^0-9kK]/g, "").slice(0, 9),
+    );
 
     onChange(formattedRut);
 
@@ -352,6 +354,11 @@ export function PaymentExpressPage() {
                         {...field}
                         label="RUT"
                         placeholder="Ej: 76.123.456-0"
+                        slotProps={{
+                          htmlInput: {
+                            maxLength: 12,
+                          },
+                        }}
                         helperText={
                           errors.rut?.message ??
                           "Puedes ingresarlo con o sin puntos."

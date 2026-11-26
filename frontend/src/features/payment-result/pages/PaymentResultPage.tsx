@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowBack,
   CheckCircleOutlined,
@@ -29,10 +29,7 @@ import {
   Typography,
 } from "@mui/material";
 import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import {
-  buildPaymentSummary,
-  formatPaymentDate,
-} from "../utils/paymentResultSummary";
+import { formatPaymentDate } from "../utils/paymentResultSummary";
 import { formatCurrency } from "../../../shared/utils/formatCurrency";
 import {
   isActivePaymentStatus,
@@ -139,6 +136,8 @@ export function PaymentResultPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [manualCopyOpen, setManualCopyOpen] = useState(false);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
+  const downloadInProgress = useRef(false);
   const [notice, setNotice] = useState<{
     message: string;
     severity: "success" | "error";
@@ -179,27 +178,31 @@ export function PaymentResultPage() {
       setManualCopyOpen(true);
     }
   };
-  const downloadSummary = () => {
-    if (!payment || payment.status !== "PAID") return;
+  const downloadSummary = async () => {
+    if (!payment || payment.status !== "PAID" || downloadInProgress.current)
+      return;
+    downloadInProgress.current = true;
+    setGeneratingPdf(true);
     let url: string | undefined;
     let anchor: HTMLAnchorElement | undefined;
     try {
-      const text = buildPaymentSummary(payment);
-      url = URL.createObjectURL(
-        new Blob(["\uFEFF", text], { type: "text/plain;charset=utf-8" }),
-      );
+      const { createPaymentReceiptBlob } =
+        await import("../utils/paymentReceiptPdf");
+      url = URL.createObjectURL(createPaymentReceiptBlob(payment));
       anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = `resumen-pago-${payment.id.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`;
+      anchor.download = `comprobante-pago-${payment.id.replace(/[^a-zA-Z0-9_-]/g, "")}.pdf`;
       document.body.appendChild(anchor);
       anchor.click();
     } catch {
       setNotice({
         message:
-          "No pudimos descargar el resumen. Puedes copiar el ID de pago.",
+          "No pudimos generar el PDF. Inténtalo nuevamente o copia el ID de pago.",
         severity: "error",
       });
     } finally {
+      downloadInProgress.current = false;
+      setGeneratingPdf(false);
       anchor?.remove();
       // Da tiempo al navegador para iniciar la descarga antes de liberar el recurso.
       if (url) {
@@ -473,9 +476,9 @@ export function PaymentResultPage() {
 
                     {paid && (
                       <Alert severity="success" icon={false}>
-                        Conserva el resumen y el ID de este pago. Si la deuda
-                        todavía aparece pendiente, comparte el ID con la empresa
-                        antes de volver a pagar.
+                        Conserva el comprobante y el ID de este pago. Si la
+                        deuda todavía aparece pendiente, comparte el ID con la
+                        empresa antes de volver a pagar.
                       </Alert>
                     )}
 
@@ -485,10 +488,20 @@ export function PaymentResultPage() {
                           variant="contained"
                           color="secondary"
                           size="large"
-                          startIcon={<DownloadOutlined />}
-                          onClick={downloadSummary}
+                          startIcon={
+                            generatingPdf ? (
+                              <CircularProgress size={18} color="inherit" />
+                            ) : (
+                              <DownloadOutlined />
+                            )
+                          }
+                          onClick={() => void downloadSummary()}
+                          disabled={generatingPdf}
+                          aria-busy={generatingPdf}
                         >
-                          Descargar resumen
+                          {generatingPdf
+                            ? "Generando PDF…"
+                            : "Descargar comprobante PDF"}
                         </Button>
                       )}
                       {canContinue && (
@@ -685,9 +698,9 @@ export function PaymentResultPage() {
                       component="p"
                       sx={{ mt: 1.5 }}
                     >
-                      El resumen refleja el registro del portal. No reemplaza el
-                      comprobante bancario ni acredita la actualización de la
-                      deuda en otros sistemas.
+                      El comprobante refleja el registro del portal. No
+                      reemplaza el comprobante bancario ni acredita la
+                      actualización de la deuda en otros sistemas.
                     </Typography>
                   )}
                 </Box>

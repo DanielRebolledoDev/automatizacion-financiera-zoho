@@ -1,3 +1,5 @@
+import { readZohoPaymentAccountId } from '../../../common/utils/zoho-payment-account.util';
+
 // Entradas externas y JSON persistido: se validan en ejecución, no mediante casts.
 export function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -58,6 +60,14 @@ export function validateStoredZohoPayload(
       local.amount
   )
     return null;
+  // Los intentos históricos sin account_id conservan su evidencia original.
+  // Un valor presente pero inválido no se interpreta como un intento histórico.
+  if (
+    Object.keys(payload).includes('account_id') &&
+    (readZohoPaymentAccountId(payload.account_id) === null ||
+      readZohoPaymentAccountId(payload.account_id) !== payload.account_id)
+  )
+    return null;
   return payload;
 }
 
@@ -69,6 +79,12 @@ export function compareZohoPayment(
   const remote = asObject(remoteValue);
   if (!remote) return ['Respuesta sin objeto payment válido.'];
   const differences: string[] = [];
+  if (
+    Object.keys(stored).includes('account_id') &&
+    (readZohoPaymentAccountId(stored.account_id) === null ||
+      remote.account_id !== stored.account_id)
+  )
+    differences.push('Cuenta de destino distinta, inválida o ausente.');
   if (remote.payment_id !== expectedRemoteId)
     differences.push('Identificador remoto distinto.');
   if (remote.customer_id !== stored.customer_id)

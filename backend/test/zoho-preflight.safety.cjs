@@ -79,12 +79,20 @@ function setup() {
     readFails: false,
     postFails: false,
     write: true,
+    accountId: '4031824000099999999',
+    responseAccount: '4031824000099999999',
+    detailAccount: '4031824000099999999',
+    detailFails: false,
+    detailId: 'remote-payment',
+    detailCode: 0,
+    changeAccountOnClaim: false,
   };
   const config = {
     get: (key) =>
       ({
         ZOHO_WRITE_PAYMENTS_ENABLED: flags.write ? 'true' : 'false',
         ZOHO_PAYMENT_ALLOWED_RUTS: '11111111-1',
+        ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID: flags.accountId,
       })[key],
   };
   const prisma = {
@@ -93,6 +101,12 @@ function setup() {
       updateMany: (args) => {
         calls.updates.push(structuredClone(args));
         calls.order.push('update');
+        if (
+          flags.changeAccountOnClaim &&
+          args.data.zohoSyncStatus === 'SENDING'
+        ) {
+          flags.accountId = '4031824000088888888';
+        }
         const count =
           args.data.zohoSyncStatus === 'SENDING' ? flags.claimCount : 1;
         if (count === 1) Object.assign(payment, structuredClone(args.data));
@@ -105,6 +119,17 @@ function setup() {
     getFromBooks: (path, params, options) => {
       calls.reads.push({ path, params, options });
       calls.order.push('read');
+      if (path.startsWith('/customerpayments/')) {
+        if (flags.detailFails)
+          return Promise.reject(new Error('GET de cuenta falló'));
+        return Promise.resolve({
+          code: flags.detailCode,
+          payment: {
+            payment_id: flags.detailId,
+            account_id: flags.detailAccount,
+          },
+        });
+      }
       if (flags.readFails) return Promise.reject(new Error('Timeout simulado'));
       return Promise.resolve({ code: 0, invoice: structuredClone(invoice) });
     },
@@ -115,7 +140,10 @@ function setup() {
         return Promise.reject(new Error('Resultado incierto simulado'));
       return Promise.resolve({
         code: 0,
-        payment: { payment_id: 'remote-payment' },
+        payment: {
+          payment_id: 'remote-payment',
+          account_id: flags.responseAccount,
+        },
       });
     },
   };
@@ -349,4 +377,145 @@ test('Books: transmite organización esperada y tiempo límite con GET y POST si
   );
   await books.postToBooks('/customerpayments', {}, {}, 'org-test');
   assert.deepEqual(calls, ['GET', 'POST']);
+});
+
+test('cuenta: dry-run incluye ID exacto y no consulta APIs', async () => {
+  const f = setup();
+  const result = await f.service.buildCustomerPaymentDryRun(f.payment.id);
+  assert.equal(result.payload.account_id, '4031824000099999999');
+  assert.equal(f.calls.reads.length, 0);
+  assert.equal(f.calls.posts.length, 0);
+});
+for (const value of [undefined, '', ' ', 'abc', '123.4', '1e10', 123, '0']) {
+  test(`cuenta inválida ${JSON.stringify(value)}: no reserva ni envía`, async () => {
+    const f = setup();
+    f.flags.accountId = value;
+    await assert.rejects(() =>
+      f.service.syncCustomerPaymentToZoho(f.payment.id),
+    );
+    assert.equal(f.calls.reads.length, 0);
+    assert.equal(f.calls.posts.length, 0);
+    assert.equal(f.calls.updates.length, 0);
+  });
+}
+test('cuenta: quita espacios sin convertir el ID a número', async () => {
+  const f = setup();
+  f.flags.accountId = ' 4031824000099999999 ';
+  await f.service.syncCustomerPaymentToZoho(f.payment.id);
+  assert.equal(f.calls.posts[0].payload.account_id, '4031824000099999999');
+  assert.equal(f.payment.zohoSyncPayload.account_id, '4031824000099999999');
+});
+test('cuenta: cambio de configuración durante reserva conserva cuenta original', async () => {
+  const f = setup();
+  f.flags.changeAccountOnClaim = true;
+  await f.service.syncCustomerPaymentToZoho(f.payment.id);
+  assert.equal(f.flags.accountId, '4031824000088888888');
+  assert.equal(f.calls.posts[0].payload.account_id, '4031824000099999999');
+  assert.equal(f.payment.zohoSyncPayload.account_id, '4031824000099999999');
+  assert.equal(f.payment.zohoSyncStatus, 'SYNCED');
+});
+test('cuenta ausente en POST: verifica GET del mismo pago y organización', async () => {
+  const f = setup();
+  f.flags.responseAccount = undefined;
+  await f.service.syncCustomerPaymentToZoho(f.payment.id);
+  assert.equal(f.calls.reads[1].path, '/customerpayments/remote-payment');
+  assert.equal(f.calls.reads[1].options.expectedOrganizationId, 'org-test');
+  assert.equal(f.calls.posts.length, 1);
+  assert.equal(f.payment.zohoSyncStatus, 'SYNCED');
+});
+for (const value of ['4031824000088888888', null, 123]) {
+  test(`POST con cuenta incompatible ${JSON.stringify(value)}: bloquea reenvío`, async () => {
+    const f = setup();
+    f.flags.responseAccount = value;
+    await assert.rejects(() =>
+      f.service.syncCustomerPaymentToZoho(f.payment.id),
+    );
+    assert.equal(f.payment.zohoSyncStatus, 'REVIEW_REQUIRED');
+    assert.equal(f.payment.zohoSyncRemotePaymentId, 'remote-payment');
+    assert.equal(f.payment.zohoSyncPayload.account_id, '4031824000099999999');
+    await assert.rejects(() =>
+      f.service.syncCustomerPaymentToZoho(f.payment.id),
+    );
+    assert.equal(f.calls.posts.length, 1);
+  });
+}
+for (const [key, value] of [
+  ['detailAccount', '4031824000088888888'],
+  ['detailAccount', undefined],
+  ['detailFails', true],
+  ['detailId', 'other-payment'],
+  ['detailCode', 57],
+]) {
+  test(`GET de cuenta no verificable (${key}): conserva ID y no reenvía`, async () => {
+    const f = setup();
+    f.flags.responseAccount = undefined;
+    f.flags[key] = value;
+    await assert.rejects(() =>
+      f.service.syncCustomerPaymentToZoho(f.payment.id),
+    );
+    assert.equal(f.payment.zohoSyncStatus, 'REVIEW_REQUIRED');
+    assert.equal(f.payment.zohoSyncRemotePaymentId, 'remote-payment');
+    assert.equal(f.calls.posts.length, 1);
+  });
+}
+
+const { validate } = require(resolve(root, 'config/env.validation.js'));
+function environment(account, write = 'true') {
+  return {
+    NODE_ENV: 'test',
+    PORT: 3000,
+    API_PREFIX: 'api',
+    DATABASE_URL: 'unused',
+    CORS_ALLOWED_ORIGINS: 'http://localhost:5173',
+    ZOHO_WRITE_PAYMENTS_ENABLED: write,
+    ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID: account,
+  };
+}
+test('inicio: exige cuenta con escritura habilitada y conserva ID como texto', () => {
+  for (const account of [undefined, '', null, 'abc', 123]) {
+    assert.throws(
+      () => validate(environment(account)),
+      /ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID/,
+    );
+  }
+  const result = validate(environment('4031824000099999999'));
+  assert.equal(result.ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID, '4031824000099999999');
+});
+test('inicio: sin escritura puede arrancar sin cuenta', () => {
+  assert.doesNotThrow(() => validate(environment(undefined, 'false')));
+  assert.doesNotThrow(() => validate(environment('', 'false')));
+});
+const { PaymentExpressService } = require(
+  resolve(root, 'modules/payment-express/payment-express.service.js'),
+);
+test('resultado: expone referencia guardada de Khipu sin nuevas consultas', async () => {
+  let reads = 0;
+  const service = new PaymentExpressService(
+    {},
+    {
+      findPaymentStatusById: async (id) => {
+        reads += 1;
+        return {
+          payment: { id, status: 'PAID', khipuPaymentId: 'demoRef123456' },
+        };
+      },
+    },
+  );
+  const result = await service.getPaymentResult('local-test');
+  assert.equal(result.payment.khipuPaymentId, 'demoRef123456');
+  assert.equal(reads, 1);
+});
+test('resultado histórico sin referencia: devuelve null', async () => {
+  const service = new PaymentExpressService(
+    {},
+    {
+      findPaymentStatusById: async (id) => ({
+        payment: { id, status: 'PAID' },
+      }),
+    },
+  );
+  assert.equal(
+    (await service.getPaymentResult('local-test')).payment.khipuPaymentId,
+    null,
+  );
 });

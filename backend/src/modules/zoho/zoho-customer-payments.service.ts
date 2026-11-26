@@ -15,6 +15,7 @@ import {
   ZohoSyncStatus,
 } from '@prisma/client';
 import { randomUUID } from 'crypto';
+import { readZohoPaymentAccountId } from '../../common/utils/zoho-payment-account.util';
 import { PrismaService } from '../../prisma/prisma.service';
 import type {
   ZohoCreateCustomerPaymentPayload,
@@ -134,6 +135,7 @@ export class ZohoCustomerPaymentsService {
     }
 
     let remotePaymentId: string | null = null;
+    let verifyingAccount = false;
     try {
       const zohoResponse =
         await this.zohoBooksService.postToBooks<ZohoCustomerPaymentResponse>(
@@ -153,6 +155,34 @@ export class ZohoCustomerPaymentsService {
           'Zoho no devolvió una confirmación válida con code 0 y payment_id.',
         );
       }
+
+      // Verifica lo registrado; si POST omite la cuenta, consulta el mismo ID.
+      // Nunca repite el POST para corregir una cuenta distinta o un GET fallido.
+      verifyingAccount = true;
+      let registeredAccount = zohoResponse.payment?.account_id;
+      if (registeredAccount === undefined) {
+        const detail =
+          await this.zohoBooksService.getFromBooks<ZohoCustomerPaymentResponse>(
+            `/customerpayments/${encodeURIComponent(remotePaymentId)}`,
+            {},
+            { expectedOrganizationId: organizationId },
+          );
+        if (
+          detail?.code !== 0 ||
+          detail.payment?.payment_id !== remotePaymentId
+        ) {
+          throw new ServiceUnavailableException(
+            'No se pudo verificar la cuenta del pago registrado en Zoho.',
+          );
+        }
+        registeredAccount = detail.payment.account_id;
+      }
+      if (registeredAccount !== payload.account_id) {
+        throw new ConflictException(
+          'La cuenta del pago registrado en Zoho no coincide con la cuenta enviada.',
+        );
+      }
+      verifyingAccount = false;
 
       const saved = await this.prisma.payment.updateMany({
         where: {
@@ -187,9 +217,11 @@ export class ZohoCustomerPaymentsService {
     } catch {
       // Un error HTTP, timeout o fallo al guardar NO prueba ausencia en Zoho.
       // Incluso si este update falla, SENDING conserva la prohibición de reenvío.
-      const message = remotePaymentId
-        ? 'Se recibió un ID de Zoho, pero no se pudo completar su registro local. Revisar antes de cualquier reenvío.'
-        : 'No se conoce con certeza el resultado del envío. Revisar Zoho antes de cualquier reenvío.';
+      const message = verifyingAccount
+        ? 'Zoho devolvió un ID de pago, pero no se pudo confirmar la cuenta de destino esperada. Revisar antes de cualquier reenvío.'
+        : remotePaymentId
+          ? 'Se recibió un ID de Zoho, pero no se pudo completar su registro local. Revisar antes de cualquier reenvío.'
+          : 'No se conoce con certeza el resultado del envío. Revisar Zoho antes de cualquier reenvío.';
       try {
         await this.prisma.payment.updateMany({
           where: {
@@ -678,7 +710,16 @@ export class ZohoCustomerPaymentsService {
       );
     }
 
+    const accountId = readZohoPaymentAccountId(
+      this.configService.get<unknown>('ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID'),
+    );
+    if (!accountId) {
+      throw new ServiceUnavailableException(
+        'Falta una ZOHO_CUSTOMER_PAYMENT_ACCOUNT_ID válida. Configura el ID interno de la cuenta de Zoho; no se enviará el pago a una cuenta por defecto.',
+      );
+    }
     const payload: ZohoCreateCustomerPaymentPayload = {
+      account_id: accountId,
       customer_id: payment.customer.zohoCustomerId,
       payment_mode:
         this.configService.get<string>('ZOHO_CUSTOMER_PAYMENT_MODE')?.trim() ||

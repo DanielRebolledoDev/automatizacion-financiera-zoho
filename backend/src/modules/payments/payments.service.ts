@@ -1440,11 +1440,18 @@ export class PaymentsService {
           'El proveedor cambió después de reservar el pago.',
         );
       }
+
+      const paymentModeLabels: Record<PaymentMode, string> = {
+        [PaymentMode.TOTAL_DEBT]: 'deuda total',
+        [PaymentMode.OVERDUE_DEBT]: 'deuda vencida',
+        [PaymentMode.MANUAL_SELECTION]: 'facturas seleccionadas',
+      };
+
       const khipuPayment = await this.khipuService.createPayment({
         localPaymentId: params.paymentId,
         amount: params.amount,
         currency: 'CLP',
-        subject: `Pago ${params.mode} - ${params.customer.businessName}`,
+        subject: `Pago ${paymentModeLabels[params.mode]} - ${params.customer.businessName}`,
         body: `Pago generado desde Portal Pago Express. ID local: ${params.paymentId}`,
         returnUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}`,
         cancelUrl: `${frontendUrl}/pago-express/resultado/${params.paymentId}?cancelled=1`,

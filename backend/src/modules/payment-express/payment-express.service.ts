@@ -125,6 +125,7 @@ export class PaymentExpressService {
       message: 'Resultado de pago obtenido correctamente.',
       payment: {
         id: payment.payment.id,
+        khipuPaymentId: payment.payment.khipuPaymentId ?? null,
         amount: payment.payment.amount,
         currency: payment.payment.currency,
         status: payment.payment.status,

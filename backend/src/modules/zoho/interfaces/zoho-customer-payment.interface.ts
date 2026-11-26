@@ -6,6 +6,7 @@ export interface ZohoCustomerPaymentInvoiceApplication {
 export interface ZohoCreateCustomerPaymentPayload {
   customer_id: string;
   payment_mode: string;
+  account_id: string;
   amount: number;
   date: string;
   reference_number: string;
@@ -18,6 +19,7 @@ export interface ZohoCustomerPaymentResponse {
   message?: string;
   payment?: {
     payment_id?: string;
+    account_id?: string;
     payment_number?: string;
     customer_id?: string;
     customer_name?: string;
